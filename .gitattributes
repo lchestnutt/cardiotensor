@@ -1,0 +1,4 @@
+paper/figs/pipeline.svg filter=lfs diff=lfs merge=lfs -text
+paper/figs/pipeline.png filter=lfs diff=lfs merge=lfs -text
+assets/images/pipeline.png filter=lfs diff=lfs merge=lfs -text
+orien.tif filter=lfs diff=lfs merge=lfs -text
