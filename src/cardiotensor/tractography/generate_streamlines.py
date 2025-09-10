@@ -404,6 +404,13 @@ def generate_streamlines_from_params(
         bidirectional=bidirectional,
     )
 
+    # --- If binned, rescale coordinates back to full-res ---
+    if bin_factor > 1:
+        streamlines = [
+            [(z * bin_factor, y * bin_factor, x * bin_factor) for (z, y, x) in sl]
+            for sl in streamlines
+        ]
+
     # --- Load HA for sampling ---
     print("📥 Loading HA volume for sampling...")
     ha_volume = DataReader(ha_load_dir).load_volume(
