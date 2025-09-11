@@ -131,14 +131,6 @@ def show_streamlines(
         If None, defaults to FURY HSV mapping.
     """
     print(f"Initial number of streamlines: {len(streamlines_xyz)}")
-    if filter_min_len:
-        print(f"Filtering out streamlines shorter than {filter_min_len} points")
-    if downsample_factor > 1:
-        print(f"Downsampling each streamline by factor {downsample_factor}")
-    if subsample_factor > 1:
-        print(f"Subsampling: keeping 1 in every {subsample_factor} streamlines")
-    if max_streamlines:
-        print(f"Limiting to max {max_streamlines} streamlines")
 
     # --- Cropping
     print(
@@ -184,19 +176,25 @@ def show_streamlines(
 
         if not streamlines_xyz:
             raise ValueError("❌ No streamlines intersect the crop box.")
-
-    print("Cropping applied")
+        
+        print("Cropping applied")
 
     # --- Downsample and filter
     print(f"Downsampling points by factor {downsample_factor}")
+    print(f"Filtering out streamlines shorter than {filter_min_len} points")
     downsampled_streamlines = []
     downsampled_colors = []
-    for sl, cl in zip(streamlines_xyz, color_values):
+    idx = 0
+    for sl in streamlines_xyz:
+        color_slice = color_values[idx : idx + len(sl)]
         ds_sl = downsample_streamline(sl, downsample_factor)
-        ds_cl = downsample_streamline(cl, downsample_factor)
+        ds_cl = downsample_streamline(color_slice, downsample_factor)
+
         if filter_min_len is None or len(ds_sl) >= filter_min_len:
             downsampled_streamlines.append(ds_sl)
             downsampled_colors.append(ds_cl)
+
+        idx += len(sl)
 
     streamlines_xyz = downsampled_streamlines
     color_values = downsampled_colors
@@ -206,7 +204,7 @@ def show_streamlines(
 
     # --- Subsample
     if subsample_factor > 1:
-        print(f"Subsample number of streamlines by factor {downsample_factor}")
+        print(f"Subsampling: keeping 1 in every {subsample_factor} streamlines")
         total = len(streamlines_xyz)
         selected_idx = sorted(random.sample(range(total), total // subsample_factor))
         streamlines_xyz = [streamlines_xyz[i] for i in selected_idx]
@@ -214,6 +212,7 @@ def show_streamlines(
 
     # --- Cap max
     if max_streamlines is not None and len(streamlines_xyz) > max_streamlines:
+        print(f"Limiting to max {max_streamlines} streamlines")
         selected_idx = sorted(
             random.sample(range(len(streamlines_xyz)), max_streamlines)
         )
