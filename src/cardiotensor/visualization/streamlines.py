@@ -6,23 +6,55 @@ from cardiotensor.colormaps.helix_angle import helix_angle_cmap
 from cardiotensor.visualization.fury_plotting_streamlines import show_streamlines
 
 
-def compute_elevation_angles(streamlines):
-    """Compute per-vertex elevation angle as a flat 1D array."""
+
+
+def _ha_to_degrees_per_streamline(ha_list):
+    """
+    Convert HA values per streamline to degrees in [-90, 90].
+    Accepts values already in degrees or 0–255 encoded (uint8-like).
+    Returns list of float32 arrays aligned to streamlines.
+    """
+    out = []
+    for ha in ha_list:
+        ha = np.asarray(ha)
+        # Heuristic: if values look like 0–255, map to degrees; else assume they are already degrees.
+        if ha.size > 0 and np.nanmax(ha) > 1.5:  # e.g., 255
+            ha_deg = (ha.astype(np.float32) / 255.0) * 180.0 - 90.0
+        else:
+            ha_deg = ha.astype(np.float32)
+        out.append(ha_deg)
+    return out
+
+
+def compute_elevation_angles(streamlines_xyz):
+    """
+    Compute per-vertex elevation angle for each streamline.
+    Returns a list of (N_i,) float32 arrays aligned to streamlines.
+    """
     all_angles = []
-    for pts in streamlines:
-        if len(pts) < 2:
-            all_angles.append(np.zeros((len(pts),), dtype=np.float32))
+    for pts in streamlines_xyz:
+        pts = np.asarray(pts, dtype=np.float32)
+        n = len(pts)
+        if n < 2:
+            all_angles.append(np.zeros((n,), dtype=np.float32))
             continue
+
+        # Tangent vectors between successive points (x,y,z)
         vecs = np.diff(pts, axis=0)
         norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-        normalized = np.divide(vecs, norms, where=norms != 0)
-        z_components = normalized[:, 2]
-        elev = np.arcsin(z_components) * 180.0 / np.pi
-        elev = np.concatenate([elev, [elev[-1]]])  # match #points
-        all_angles.append(elev.astype(np.float32))
+        # Safe normalize (avoid divide by zero)
+        normalized = np.divide(vecs, norms, out=np.zeros_like(vecs), where=norms != 0)
 
-    # flatten into a single array
-    return np.hstack(all_angles).astype(np.float32)
+        # Elevation = arcsin(z_component) in degrees
+        z_components = normalized[:, 2]
+        elev = np.arcsin(np.clip(z_components, -1.0, 1.0)) * (180.0 / np.pi)
+
+        # Repeat last angle so length matches number of points
+        elev = np.concatenate([elev, [elev[-1]]]).astype(np.float32)
+        all_angles.append(elev)
+    return all_angles
+
+
 
 
 def visualize_streamlines(
@@ -89,17 +121,24 @@ def visualize_streamlines(
         for sl in raw_streamlines.tolist()
     ]
 
-    # Compute coloring
-    print("Compute coloring")
+    # Build per-vertex color arrays aligned with streamlines
+    print("Computing color values per streamline")
     if color_by == "elevation":
         color_values = compute_elevation_angles(streamlines_xyz)
-    else:  # color_by == "ha"
-        ha_values = data.get("ha_values")
-        if ha_values is None:
-            raise ValueError("'ha_values' array missing in .npz.")
-        color_values = ha_values.astype(np.float32)
-        # Convert your 0–255 values into real [-90, 90] degrees
-        color_values = color_values / 255 * 180 - 90
+    elif color_by == "ha":
+        ha_obj = data.get("ha_values")
+        if ha_obj is None:
+            raise ValueError("'ha_values' array missing in .npz for color_by='ha'.")
+        # Ensure list-of-arrays aligned to streamlines
+        ha_list = [np.asarray(a) for a in ha_obj.tolist()]
+        if len(ha_list) != len(streamlines_xyz):
+            raise ValueError(
+                f"ha_values length ({len(ha_list)}) does not match streamlines ({len(streamlines_xyz)})"
+            )
+        # Convert to degrees if needed
+        color_values = _ha_to_degrees_per_streamline(ha_list)
+    else:
+        raise ValueError("color_by must be 'ha' or 'elevation'.")
 
     # Default to helix_angle_cmap if no colormap is provided
     if colormap is None:

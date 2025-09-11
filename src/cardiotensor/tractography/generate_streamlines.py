@@ -403,6 +403,27 @@ def generate_streamlines_from_params(
         min_length_pts=min_length_pts,
         bidirectional=bidirectional,
     )
+    # --- Load HA for sampling ---
+    print("Loading HA volume for sampling...")
+    ha_volume = DataReader(ha_load_dir).load_volume(
+        start_index=start_z_binned, end_index=end_z_binned
+    )
+    ha_volume = ha_volume[:, start_y_binned:end_y_binned, start_x_binned:end_x_binned]
+
+    def sample_ha_along(streamline: list[tuple[float, float, float]]) -> np.ndarray:
+        """Per-vertex HA sampling (trilinear) matching the streamline length."""
+        vals = []
+        Z, Y, X = ha_volume.shape
+        for z, y, x in streamline:
+            # clamp to bounds then trilinear interpolate at fractional coords
+            zc = min(max(z, 0.0), Z - 1.0)
+            yc = min(max(y, 0.0), Y - 1.0)
+            xc = min(max(x, 0.0), X - 1.0)
+            vals.append(trilinear_interpolate_scalar(ha_volume, (zc, yc, xc)))
+        return np.asarray(vals, dtype=np.float32)
+
+    # --- HA values per streamline (list-aligned) ---
+    ha_values_per_streamline = [sample_ha_along(sl) for sl in streamlines]
 
     # --- If binned, rescale coordinates back to full-res ---
     if bin_factor > 1:
@@ -411,33 +432,11 @@ def generate_streamlines_from_params(
             for sl in streamlines
         ]
 
-    # --- Load HA for sampling ---
-    print("📥 Loading HA volume for sampling...")
-    ha_volume = DataReader(ha_load_dir).load_volume(
-        start_index=start_z_binned, end_index=end_z_binned
-    )
-    ha_volume = ha_volume[:, start_y_binned:end_y_binned, start_x_binned:end_x_binned]
-
-    def sample_ha_along(streamline):
-        values = []
-        Z, Y, X = ha_volume.shape
-        for z, y, x in streamline:
-            zi, yi, xi = map(int, [round(z), round(y), round(x)])
-            zi, yi, xi = (
-                max(0, min(zi, Z - 1)),
-                max(0, min(yi, Y - 1)),
-                max(0, min(xi, X - 1)),
-            )
-            values.append(float(ha_volume[zi, yi, xi]))
-        return values
-
-    all_ha = [val for sl in streamlines for val in sample_ha_along(sl)]
-
-    # --- Save output ---
+    # --- Save output (ragged lists => dtype=object) ---
     out_path = output_dir / "streamlines.npz"
     np.savez_compressed(
         out_path,
         streamlines=np.array(streamlines, dtype=object),
-        ha_values=np.array(all_ha, dtype=np.float32),
+        ha_values=np.array(ha_values_per_streamline, dtype=object),
     )
-    print(f"✅ Saved {len(streamlines)} streamlines to {out_path}")
+    print(f"✅ Saved {len(streamlines)} streamlines and HA (per-vertex) to {out_path}")

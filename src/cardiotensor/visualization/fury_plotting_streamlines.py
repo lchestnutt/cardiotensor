@@ -140,117 +140,84 @@ def show_streamlines(
     )
 
     if crop_bounds is not None:
-        z_min, z_max = crop_bounds[2]
-        y_min, y_max = crop_bounds[1]
-        x_min, x_max = crop_bounds[0]
-
-        new_streamlines = []
-        new_color_values = []
-
-        # If color_values was provided flattened, keep track with a cursor.
-        # But later code expects lists, so we’ll convert to lists here.
-        # Detect if flat (ndarray) or already list-like:
-        flat_input = not isinstance(color_values, (list, tuple))
-
-        color_cursor = 0
-        for sl in streamlines_xyz:
-            sl = np.asarray(sl)
-            if flat_input:
-                n_pts = len(sl)
-                cl = np.asarray(color_values[color_cursor:color_cursor + n_pts])
-                color_cursor += n_pts
-            else:
-                # color_values is parallel to streamlines_xyz
-                # pull next color array by index; we’ll iterate with zip below if you prefer
-                raise ValueError("color_values should be a flat 1D array before cropping.")
-
+        (x_min, x_max), (y_min, y_max), (z_min, z_max) = crop_bounds
+        print(f"Cropping streamlines within bounds: {crop_bounds}")
+        new_streamlines, new_colors = [], []
+        for sl, cl in zip(streamlines_xyz, color_values):
             segs, cols = _split_streamline_by_bounds(
                 sl, cl, x_min, x_max, y_min, y_max, z_min, z_max
             )
             if segs:
                 new_streamlines.extend(segs)
-                new_color_values.extend(cols)
-
-        streamlines_xyz = new_streamlines
-        color_values = new_color_values  # now a list aligned with streamlines
-
+                new_colors.extend(cols)
+        streamlines_xyz, color_values = new_streamlines, new_colors
         if not streamlines_xyz:
             raise ValueError("❌ No streamlines intersect the crop box.")
-        
-        print("Cropping applied")
+        print("Cropping applied.")
+    else:
+        print("No cropping applied.")
 
+      
     # --- Downsample and filter
     print(f"Downsampling points by factor {downsample_factor}")
-    print(f"Filtering out streamlines shorter than {filter_min_len} points")
-    downsampled_streamlines = []
-    downsampled_colors = []
-    idx = 0
-    for sl in streamlines_xyz:
-        color_slice = color_values[idx : idx + len(sl)]
+    if filter_min_len is not None:
+        print(f"Filtering out streamlines shorter than {filter_min_len} points")
+
+    ds_streamlines, ds_colors = [], []
+    for sl, cl in zip(streamlines_xyz, color_values):
         ds_sl = downsample_streamline(sl, downsample_factor)
-        ds_cl = downsample_streamline(color_slice, downsample_factor)
-
+        ds_cl = downsample_streamline(cl, downsample_factor)
         if filter_min_len is None or len(ds_sl) >= filter_min_len:
-            downsampled_streamlines.append(ds_sl)
-            downsampled_colors.append(ds_cl)
+            ds_streamlines.append(ds_sl)
+            ds_colors.append(ds_cl)
 
-        idx += len(sl)
-
-    streamlines_xyz = downsampled_streamlines
-    color_values = downsampled_colors
-
+    streamlines_xyz, color_values = ds_streamlines, ds_colors
     if not streamlines_xyz:
-        raise ValueError("❌ No streamlines left after downsampling and filtering.")
+        raise ValueError("❌ No streamlines left after downsampling/filtering.")
 
     # --- Subsample
     if subsample_factor > 1:
         print(f"Subsampling: keeping 1 in every {subsample_factor} streamlines")
         total = len(streamlines_xyz)
-        selected_idx = sorted(random.sample(range(total), total // subsample_factor))
-        streamlines_xyz = [streamlines_xyz[i] for i in selected_idx]
-        color_values = [color_values[i] for i in selected_idx]
+        keep_idx = sorted(random.sample(range(total), max(1, total // subsample_factor)))
+        streamlines_xyz = [streamlines_xyz[i] for i in keep_idx]
+        color_values    = [color_values[i]    for i in keep_idx]
 
     # --- Cap max
     if max_streamlines is not None and len(streamlines_xyz) > max_streamlines:
         print(f"Limiting to max {max_streamlines} streamlines")
-        selected_idx = sorted(
-            random.sample(range(len(streamlines_xyz)), max_streamlines)
-        )
-        streamlines_xyz = [streamlines_xyz[i] for i in selected_idx]
-        color_values = [color_values[i] for i in selected_idx]
+        keep_idx = sorted(random.sample(range(len(streamlines_xyz)), max_streamlines))
+        streamlines_xyz = [streamlines_xyz[i] for i in keep_idx]
+        color_values    = [color_values[i]    for i in keep_idx]
 
     print(f"Final number of streamlines to render: {len(streamlines_xyz)}")
-
     if not color_values:
-        raise ValueError(
-            "❌ No streamlines left after filtering and cropping. Adjust parameters like --crop or --min-length."
-        )
+        raise ValueError("❌ No streamlines left after filtering/cropping.")
 
-    flat_colors = np.concatenate(color_values)
-    print(f"Coloring mode: min={flat_colors.min():.2f}, max={flat_colors.max():.2f}")
+    # Flatten per-vertex scalars for FURY input
+    flat_colors = np.concatenate([np.asarray(c).ravel() for c in color_values])
+    min_val = float(np.nanmin(flat_colors))
+    max_val = float(np.nanmax(flat_colors))
+    print(f"Coloring range: min={min_val:.3f}, max={max_val:.3f}")
     print(f"Rendering mode: {mode}")
 
-    min_val = float(flat_colors.min())
-    max_val = float(flat_colors.max())
-
+    # --- Lookup table
     if colormap is None:
-        # Default HSV colormap from FURY
         lut = fury.actor.colormap_lookup_table(
             scale_range=(min_val, max_val),
             hue_range=(0.7, 0.0),
             saturation_range=(0.5, 1.0),
         )
     else:
-        # Convert Matplotlib cmap to VTK LUT
         lut = matplotlib_cmap_to_fury_lut(
             cmap=colormap,
-            value_range=(-90, 90),
+            value_range=(min_val, max_val),  # auto-range to your data
             n_colors=256,
         )
-    # Map scalar values to LUT indices
+
+    # --- Render
     scene = fury.window.Scene()
     colors = flat_colors  # per-vertex scalars
-
 
     # --- Render according to mode
     if mode == "tube":
