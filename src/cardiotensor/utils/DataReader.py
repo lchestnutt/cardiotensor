@@ -1,4 +1,5 @@
 import sys
+import os
 from os import PathLike
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,27 @@ import psutil
 import SimpleITK as sitk
 from alive_progress import alive_bar
 from scipy.ndimage import zoom
+from skimage.measure import block_reduce
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+# ---------------------------
+# Integer-only upsampling util
+# ---------------------------
+def _upsample_mask_integer(mask: np.ndarray, zf: int, yf: int, xf: int) -> np.ndarray:
+    """Pure-NumPy nearest-neighbor upsampling for integer factors."""
+    out = mask
+    if zf != 1:
+        out = np.repeat(out, zf, axis=0)
+    if yf != 1:
+        out = np.repeat(out, yf, axis=1)
+    if xf != 1:
+        out = np.repeat(out, xf, axis=2)
+    return out
+
+
+
 
 
 class DataReader:
@@ -125,7 +147,10 @@ class DataReader:
         unbinned_shape: tuple[int, int, int] | None = None,
     ) -> np.ndarray:
         """
-        Loads the volume and resizes it to unbinned_shape if provided, using fast scipy.ndimage.zoom.
+        Loads the volume and resizes it to unbinned_shape if provided, using fast
+        integer-only resampling:
+        - np.repeat for upsampling
+        - block_reduce (max) for downsampling
 
         Args:
             start_index (int): Start index for slicing (for stacks).
@@ -151,11 +176,11 @@ class DataReader:
         if unbinned_shape is not None and self.shape != unbinned_shape:
             need_resize = True
             zoom_factors = tuple(u / s for u, s in zip(unbinned_shape, self.shape))
-            print(f"Zoom factors: {zoom_factors}")
+            print(f"Resample factors: {zoom_factors}")
         else:
             zoom_factors = (1.0, 1.0, 1.0)
 
-        # Optional padding if resizing
+        # Optional padding if resizing (kept as in your original code)
         if need_resize:
             start_index_ini, end_index_ini = start_index, end_index
             start_index = int(start_index_ini / zoom_factors[0]) - 1
@@ -169,29 +194,79 @@ class DataReader:
             if self.volume_info["type"] == "mhd":
                 volume, _ = _load_raw_data_with_mhd(self.path)
                 volume = volume[start_index:end_index, :, :]
+            else:
+                raise ValueError(f"Unsupported volume type for path: {self.path}")
         else:
             volume = self._load_image_stack(
                 self.volume_info["file_list"], start_index, end_index
             )
 
         if need_resize:
-            print("Resizing with scipy.ndimage.zoom...")
+            print("Resizing with integer-only resampling...")
 
-            # Ensure float32 for better memory and speed
-            volume = volume.astype(np.float32)
-            volume = zoom(
-                volume, zoom=zoom_factors, order=0
-            )  # Nearest-neighbor for mask
+            z0, y0, x0 = volume.shape[:3]
+            z1, y1, x1 = unbinned_shape
+            fz, fy, fx = z1 / z0, y1 / y0, x1 / x0
 
-            # Final crop to original range
-            crop_start = int(abs(start_index * zoom_factors[0] - start_index_ini))
+            def _as_int_factor_up(f: float) -> int | None:
+                k = int(round(f))
+                return k if (k >= 1 and abs(f - k) < 1e-6) else None
+
+            def _as_int_factor_down(f: float) -> int | None:
+                # f < 1 expected, so divisor ~ round(1/f)
+                if f >= 1:
+                    return None
+                k = int(round(1.0 / f))
+                return k if k >= 1 and abs(f - (1.0 / k)) < 1e-6 else None
+
+            # Z
+            if fz > 1:
+                kz = _as_int_factor_up(fz)
+                if kz is None:
+                    raise ValueError(f"Non-integer upsample factor on Z: {fz}")
+                volume = np.repeat(volume, kz, axis=0)
+            elif fz < 1:
+                dz = _as_int_factor_down(fz)
+                if dz is None:
+                    raise ValueError(f"Non-integer downsample factor on Z: {fz}")
+                volume = block_reduce(volume, block_size=(dz, 1, 1), func=np.max)
+
+            # Y
+            if fy > 1:
+                ky = _as_int_factor_up(fy)
+                if ky is None:
+                    raise ValueError(f"Non-integer upsample factor on Y: {fy}")
+                volume = np.repeat(volume, ky, axis=1)
+            elif fy < 1:
+                dy = _as_int_factor_down(fy)
+                if dy is None:
+                    raise ValueError(f"Non-integer downsample factor on Y: {fy}")
+                volume = block_reduce(volume, block_size=(1, dy, 1), func=np.max)
+
+            # X
+            if fx > 1:
+                kx = _as_int_factor_up(fx)
+                if kx is None:
+                    raise ValueError(f"Non-integer upsample factor on X: {fx}")
+                volume = np.repeat(volume, kx, axis=2)
+            elif fx < 1:
+                dx = _as_int_factor_down(fx)
+                if dx is None:
+                    raise ValueError(f"Non-integer downsample factor on X: {fx}")
+                volume = block_reduce(volume, block_size=(1, 1, dx), func=np.max)
+
+            # Final crop to requested Z range (your original logic)
+            crop_start = int(abs(start_index * (z1 / z0) - start_index_ini))
             crop_end = crop_start + (end_index_ini - start_index_ini)
             crop_start = max(crop_start, 0)
             crop_end = min(crop_end, volume.shape[0])
-
             volume = volume[crop_start:crop_end, :, :]
 
+
         return volume
+
+
+
 
     def _custom_image_reader(self, file_path: Path) -> np.ndarray:
         """
@@ -204,8 +279,9 @@ class DataReader:
             np.ndarray: Image data as a NumPy array.
         """
         if file_path.suffix == ".npy":
-            return np.load(file_path)
+            return np.load(file_path, mmap_mode="r")  # ← mmap avoids a full copy
         return cv2.imread(str(file_path), cv2.IMREAD_UNCHANGED)
+
 
     def _load_image_stack(
         self, file_list: list[Path], start_index: int, end_index: int
@@ -244,7 +320,7 @@ class DataReader:
             ]
 
             # Compute the volume
-            computed_data = dask.compute(*delayed_tasks)
+            computed_data = dask.compute(*delayed_tasks, scheduler="threads")
 
             # Validate shape consistency
             first_shape = computed_data[0].shape
