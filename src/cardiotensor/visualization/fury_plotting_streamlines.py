@@ -46,6 +46,41 @@ def matplotlib_cmap_to_fury_lut(cmap, value_range=(-1, 1), n_colors=256):
     return lut
 
 
+def _split_streamline_by_bounds(sl: np.ndarray,
+                                cl: np.ndarray,
+                                x_min, x_max, y_min, y_max, z_min, z_max):
+    """
+    Returns lists of segments (points) and colors, one per contiguous in-bounds run.
+    No straight 'bridging' lines will be drawn between disjoint segments.
+    """
+    # in-bounds mask
+    within = (
+        (sl[:, 0] >= x_min) & (sl[:, 0] <= x_max) &
+        (sl[:, 1] >= y_min) & (sl[:, 1] <= y_max) &
+        (sl[:, 2] >= z_min) & (sl[:, 2] <= z_max)
+    )
+
+    if not np.any(within):
+        return [], []
+
+    # find starts/ends of True runs
+    w = within.astype(np.int8)
+    # transitions: +1 = False->True (start), -1 = True->False (end+1)
+    trans = np.diff(np.pad(w, (1, 1), constant_values=0))
+    starts = np.where(trans == +1)[0]
+    ends   = np.where(trans == -1)[0]  # each end is exclusive index
+
+    segs, cols = [], []
+    for s, e in zip(starts, ends):
+        seg = sl[s:e]         # e is exclusive
+        col = cl[s:e]
+        if len(seg) > 0:
+            segs.append(seg)
+            cols.append(col)
+
+    return segs, cols
+
+
 def show_streamlines(
     streamlines_xyz: list[np.ndarray],
     color_values: list[np.ndarray],
@@ -107,10 +142,11 @@ def show_streamlines(
 
     # --- Cropping
     print(
-        f"Cropping streamlines within bounds: {crop_bounds}"
-        if crop_bounds
-        else "No cropping applied."
+    f"Cropping streamlines within bounds: {crop_bounds}"
+    if crop_bounds
+    else "No cropping applied."
     )
+
     if crop_bounds is not None:
         z_min, z_max = crop_bounds[2]
         y_min, y_max = crop_bounds[1]
@@ -118,37 +154,37 @@ def show_streamlines(
 
         new_streamlines = []
         new_color_values = []
-        color_idx = 0
 
+        # If color_values was provided flattened, keep track with a cursor.
+        # But later code expects lists, so we’ll convert to lists here.
+        # Detect if flat (ndarray) or already list-like:
+        flat_input = not isinstance(color_values, (list, tuple))
+
+        color_cursor = 0
         for sl in streamlines_xyz:
-            n_pts = len(sl)
-            cl = color_values[color_idx : color_idx + n_pts]
-
             sl = np.asarray(sl)
-            cl = np.asarray(cl)
+            if flat_input:
+                n_pts = len(sl)
+                cl = np.asarray(color_values[color_cursor:color_cursor + n_pts])
+                color_cursor += n_pts
+            else:
+                # color_values is parallel to streamlines_xyz
+                # pull next color array by index; we’ll iterate with zip below if you prefer
+                raise ValueError("color_values should be a flat 1D array before cropping.")
 
-            within = (
-                (sl[:, 0] >= x_min)
-                & (sl[:, 0] <= x_max)
-                & (sl[:, 1] >= y_min)
-                & (sl[:, 1] <= y_max)
-                & (sl[:, 2] >= z_min)
-                & (sl[:, 2] <= z_max)
+            segs, cols = _split_streamline_by_bounds(
+                sl, cl, x_min, x_max, y_min, y_max, z_min, z_max
             )
-
-            if np.any(within):  # Keep only remaining points
-                new_sl = sl[within]
-                new_cl = cl[within]
-                if len(new_sl) > 0:
-                    new_streamlines.append(new_sl)
-                    new_color_values.append(new_cl)
-
-            color_idx += n_pts
+            if segs:
+                new_streamlines.extend(segs)
+                new_color_values.extend(cols)
 
         streamlines_xyz = new_streamlines
-        color_values = (
-            np.concatenate(new_color_values) if new_color_values else np.array([])
-        )
+        color_values = new_color_values  # now a list aligned with streamlines
+
+        if not streamlines_xyz:
+            raise ValueError("❌ No streamlines intersect the crop box.")
+
 
     # --- Downsample and filter
     downsampled_streamlines = []
@@ -217,6 +253,7 @@ def show_streamlines(
     # Map scalar values to LUT indices
     scene = fury.window.Scene()
     colors = flat_colors  # per-vertex scalars
+
 
     # --- Render according to mode
     if mode == "tube":
