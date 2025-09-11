@@ -189,17 +189,13 @@ def show_streamlines(
     # --- Downsample and filter
     downsampled_streamlines = []
     downsampled_colors = []
-    idx = 0
     for sl in streamlines_xyz:
-        color_slice = color_values[idx : idx + len(sl)]
         ds_sl = downsample_streamline(sl, downsample_factor)
         ds_cl = downsample_streamline(color_slice, downsample_factor)
 
         if filter_min_len is None or len(ds_sl) >= filter_min_len:
             downsampled_streamlines.append(ds_sl)
             downsampled_colors.append(ds_cl)
-
-        idx += len(sl)
 
     streamlines_xyz = downsampled_streamlines
     color_values = downsampled_colors
