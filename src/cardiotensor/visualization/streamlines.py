@@ -76,18 +76,21 @@ def visualize_streamlines(
     if not streamlines_file.exists():
         raise FileNotFoundError(f"❌ Streamlines file not found: {streamlines_file}")
 
+    print(f"Loading streamlines: {streamlines_file}")
     data = np.load(streamlines_file, allow_pickle=True)
     raw_streamlines = data.get("streamlines")
     if raw_streamlines is None:
         raise ValueError("'streamlines' array missing in .npz.")
 
     # Convert (z, y, x) to (x, y, z)
+    print("Convert (z, y, x) to (x, y, z)")
     streamlines_xyz = [
         np.array([(pt[2], pt[1], pt[0]) for pt in sl], dtype=np.float32)
         for sl in raw_streamlines.tolist()
     ]
 
     # Compute coloring
+    print("Compute coloring")
     if color_by == "elevation":
         color_values = compute_elevation_angles(streamlines_xyz)
     else:  # color_by == "ha"
@@ -101,6 +104,7 @@ def visualize_streamlines(
     # Default to helix_angle_cmap if no colormap is provided
     if colormap is None:
         colormap = helix_angle_cmap
+    
 
     # Render streamlines
     show_streamlines(

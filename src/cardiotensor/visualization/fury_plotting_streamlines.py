@@ -185,14 +185,15 @@ def show_streamlines(
         if not streamlines_xyz:
             raise ValueError("❌ No streamlines intersect the crop box.")
 
+    print("Cropping applied")
 
     # --- Downsample and filter
+    print(f"Downsampling points by factor {downsample_factor}")
     downsampled_streamlines = []
     downsampled_colors = []
-    for sl in streamlines_xyz:
+    for sl, cl in zip(streamlines_xyz, color_values):
         ds_sl = downsample_streamline(sl, downsample_factor)
-        ds_cl = downsample_streamline(color_slice, downsample_factor)
-
+        ds_cl = downsample_streamline(cl, downsample_factor)
         if filter_min_len is None or len(ds_sl) >= filter_min_len:
             downsampled_streamlines.append(ds_sl)
             downsampled_colors.append(ds_cl)
@@ -205,6 +206,7 @@ def show_streamlines(
 
     # --- Subsample
     if subsample_factor > 1:
+        print(f"Subsample number of streamlines by factor {downsample_factor}")
         total = len(streamlines_xyz)
         selected_idx = sorted(random.sample(range(total), total // subsample_factor))
         streamlines_xyz = [streamlines_xyz[i] for i in selected_idx]
