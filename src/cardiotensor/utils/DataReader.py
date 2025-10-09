@@ -12,6 +12,7 @@ import SimpleITK as sitk
 from alive_progress import alive_bar
 from scipy.ndimage import zoom
 from skimage.measure import block_reduce
+import tifffile as tiff
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -30,7 +31,22 @@ def _upsample_mask_integer(mask: np.ndarray, zf: int, yf: int, xf: int) -> np.nd
         out = np.repeat(out, xf, axis=2)
     return out
 
-
+def _fit(arr: np.ndarray, target: tuple[int, int, int], pad_value: int = 0) -> np.ndarray:
+    """
+    Force `arr` (Z, Y, X) to exactly match `target` shape.
+    Crops if too large, pads with `pad_value` if too small.
+    """
+    tz, ty, tx = target
+    arr = arr[:tz, :ty, :tx]
+    padz = max(0, tz - arr.shape[0])
+    pady = max(0, ty - arr.shape[1])
+    padx = max(0, tx - arr.shape[2])
+    if padz or pady or padx:
+        arr = np.pad(arr,
+                     ((0, padz), (0, pady), (0, padx)),
+                     mode="constant",
+                     constant_values=pad_value)
+    return arr
 
 
 
@@ -97,7 +113,7 @@ class DataReader:
                 )
 
             # Inspect first file
-            first_image = self._custom_image_reader(volume_info["file_list"][0])
+            first_image = self._custom_image_reader(volume_info["file_list"][0])           
             volume_info["dtype"] = first_image.dtype
 
             # Shape: handle scalar vs vector
@@ -180,7 +196,6 @@ class DataReader:
         else:
             zoom_factors = (1.0, 1.0, 1.0)
 
-        # Optional padding if resizing (kept as in your original code)
         if need_resize:
             start_index_ini, end_index_ini = start_index, end_index
             start_index = int(start_index_ini / zoom_factors[0]) - 1
@@ -204,20 +219,20 @@ class DataReader:
         if need_resize:
             print("Resizing with integer-only resampling...")
 
-            z0, y0, x0 = volume.shape[:3]
-            z1, y1, x1 = unbinned_shape
-            fz, fy, fx = z1 / z0, y1 / y0, x1 / x0
+            _, y1, x1 = unbinned_shape
+            z1 = end_index_ini - start_index_ini
+            fz, fy, fx = zoom_factors
 
             def _as_int_factor_up(f: float) -> int | None:
                 k = int(round(f))
-                return k if (k >= 1 and abs(f - k) < 1e-6) else None
+                return k if (k >= 1 and abs(f - k) < 1e-1) else None
 
             def _as_int_factor_down(f: float) -> int | None:
                 # f < 1 expected, so divisor ~ round(1/f)
                 if f >= 1:
                     return None
                 k = int(round(1.0 / f))
-                return k if k >= 1 and abs(f - (1.0 / k)) < 1e-6 else None
+                return k if k >= 1 and abs(f - (1.0 / k)) < 1e-1 else None
 
             # Z
             if fz > 1:
@@ -254,33 +269,54 @@ class DataReader:
                 if dx is None:
                     raise ValueError(f"Non-integer downsample factor on X: {fx}")
                 volume = block_reduce(volume, block_size=(1, 1, dx), func=np.max)
+            
+            print(f"Resample factors: [{kz}, {ky}, {kx}]")
 
-            # Final crop to requested Z range (your original logic)
-            crop_start = int(abs(start_index * (z1 / z0) - start_index_ini))
-            crop_end = crop_start + (end_index_ini - start_index_ini)
-            crop_start = max(crop_start, 0)
-            crop_end = min(crop_end, volume.shape[0])
-            volume = volume[crop_start:crop_end, :, :]
-
+            # Enforce exact shape 
+            volume = _fit(volume, (z1, y1, x1), pad_value=0)
 
         return volume
 
 
-
-
     def _custom_image_reader(self, file_path: Path) -> np.ndarray:
         """
-        Reads an image from the given file path.
+        Reads an image from the given file path into a NumPy array.
 
         Args:
             file_path (Path): Path to the image file.
 
         Returns:
-            np.ndarray: Image data as a NumPy array.
+            np.ndarray
         """
-        if file_path.suffix == ".npy":
-            return np.load(file_path, mmap_mode="r")  # ← mmap avoids a full copy
-        return cv2.imread(str(file_path), cv2.IMREAD_UNCHANGED)
+        suffix = file_path.suffix.lower()
+
+        # 1) .npy → memory-mapped (no full copy)
+        if suffix == ".npy":
+            return np.load(file_path, mmap_mode="r")
+
+        # 2) TIFF → use tifffile (OpenCV often fails on SampleFormat/BigTIFF)
+        if suffix in {".tif", ".tiff"}:
+            try:
+                # imread handles most TIFF flavors; memmap if you want zero-copy:
+                # arr = tiff.memmap(file_path)  # if you prefer memmap
+                arr = tiff.imread(file_path)
+                # Optional: normalize binary masks to uint8 if values are 0/1
+                if arr.dtype.kind in ("i", "u") and arr.max() <= 1:
+                    arr = arr.astype(np.uint8)
+                return arr
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to read TIFF '{file_path}' with tifffile: {e}"
+                ) from e
+
+        # 3) Other formats → OpenCV (allow any depth/color)
+        img = cv2.imread(str(file_path), cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR)
+        if img is None:
+            raise RuntimeError(
+                f"cv2.imread failed for '{file_path}'. "
+                "File may be missing or in an unsupported/invalid format."
+            )
+        return img
 
 
     def _load_image_stack(
