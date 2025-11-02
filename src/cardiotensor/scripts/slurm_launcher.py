@@ -22,11 +22,23 @@ def script() -> None:
     parser.add_argument(
         "conf_file_path", type=str, help="Path to the input configuration file."
     )
+    parser.add_argument(
+        "--start_index",
+        type=int,
+        default=0,
+        help="Starting slice index for processing (default: 0).",
+    )
+    parser.add_argument(
+        "--end_index",
+        type=int,
+        default=None,
+        help="Ending slice index (default: None, processes all slices).",
+    )
     args = parser.parse_args()
     conf_file_path = args.conf_file_path
 
     # Launch processing using slurm_launcher
-    slurm_launcher(conf_file_path)
+    slurm_launcher(conf_file_path, start_index=args.start_index, end_index=args.end_index)
 
 
 if __name__ == "__main__":
