@@ -43,7 +43,7 @@ def submit_job_to_slurm(
 
     executable_path = executable_path.split(".py")[0]
     executable = os.path.basename(executable_path)
-    print(f"Script to start: {executable}")
+    print(f"Script to start: {executable}", flush=True)
 
     # Get the current date in YYYY-MM-DD format
     current_date = datetime.now().strftime("%Y-%m-%d")
@@ -57,7 +57,7 @@ def submit_job_to_slurm(
     IMAGES_PER_JOB = N_chunk
     N_jobs = math.ceil(total_images / IMAGES_PER_JOB)
 
-    print(f"\nN_jobs = {N_jobs}, IMAGES_PER_JOB = {IMAGES_PER_JOB}")
+    print(f"\nN_jobs = {N_jobs}, IMAGES_PER_JOB = {IMAGES_PER_JOB}", flush=True)
 
     slurm_script_content = f"""#!/bin/bash -l
 #SBATCH --output={log_dir}/slurm-%x-%A_%a.out
@@ -119,162 +119,136 @@ cardio-tensor {conf_file_path} --start_index $START_INDEX --end_index $END_INDEX
             ["sbatch", job_filename], capture_output=True, text=True, check=True
         )
         job_id = result.stdout.split()[-1]
-        print(f"sbatch {job_id} - Index {start_image} to {end_image}")
+        print(f"sbatch {job_id} - Index {start_image} to {end_image}", flush=True)
         return int(job_id)
     except subprocess.CalledProcessError:
-        print(f"⚠️ - Failed to submit Slurm job with script {job_filename}")
+        print(f"⚠️ - Failed to submit Slurm job with script {job_filename}", flush=True)
         sys.exit()
+
+
+
+def slurm_launcher(conf_file_path: str, start_index: int = 0, end_index: int | None = None) -> None:
+    """
+    Launch Slurm array jobs for a subset [start_index, end_index] (inclusive) of the volume.
+    If end_index is None, the last slice of the volume is used.
+    """
+    try:
+        params = read_conf_file(conf_file_path)
+    except Exception as e:
+        print(f"⚠️  Error reading parameter file '{conf_file_path}': {e}", flush=True)
+        sys.exit(1)
+
+    VOLUME_PATH = params.get("IMAGES_PATH", "")
+    OUTPUT_DIR = params.get("OUTPUT_PATH", "./output")
+    N_CHUNK = int(params.get("N_CHUNK", 100))
+    IS_TEST = params.get("TEST", False)
+
+    if IS_TEST is True:
+        sys.exit(
+            "Test mode activated, run directly 3D_processing.py or deactivate test mode in the parameter file"
+        )
+
+    data_reader = DataReader(VOLUME_PATH)
+    total_slices = int(data_reader.shape[0])
+
+    # ----- sanitize window -----
+    first = max(0, int(start_index))
+    last = total_slices - 1 if end_index is None else int(end_index)
+    if last < 0:
+        last = total_slices - 1
+
+    # clamp
+    first = max(0, min(first, total_slices - 1))
+    last = max(0, min(last, total_slices - 1))
+
+    if last < first:
+        print(f"⚠️ Invalid range: start_index ({first}) > end_index ({last})", flush=True)
+        sys.exit(1)
+
+    window_len = last - first + 1
+    print(f"Processing slice window [{first}, {last}] (len={window_len}) out of 0..{total_slices-1}", flush=True)
+
+    mem_needed = 128
+
+    # ----- build per-job intervals (inclusive) -----
+    def build_intervals(first_idx: int, last_idx: int, step: int) -> list[tuple[int, int]]:
+        out = []
+        s = first_idx
+        while s <= last_idx:
+            e = min(s + step - 1, last_idx)
+            out.append((s, e))
+            s = e + 1
+        return out
+
+    intervals = build_intervals(first, last, N_CHUNK)
+    n_jobs_total = len(intervals)
+    print(f"Splitting data into {n_jobs_total} jobs of up to {N_CHUNK} slices each", flush=True)
+
+    # ----- batch into arrays of <= 999 tasks -----
+    N_job_max_per_array = 999
+    batched = [intervals[i:i + N_job_max_per_array] for i in range(0, n_jobs_total, N_job_max_per_array)]
+    print(
+        f"Launching {len(batched)} arrays (tasks per array: {[len(b) for b in batched]})",
+        flush=True,
+    )
+
+    python_file_path = os.path.abspath(inspect.getfile(compute_orientation))
+    start_t = time.time()
+
+    for batch in batched:
+        batch_start = batch[0][0]
+        batch_end = batch[-1][1]  # inclusive
+        job_id = submit_job_to_slurm(
+            python_file_path,
+            conf_file_path,
+            batch_start,
+            batch_end,
+            N_chunk=N_CHUNK,
+            mem_needed=mem_needed,
+        )
+        print(
+            f"Submitted array for [{batch_start}, {batch_end}] (job ID: {job_id})",
+            flush=True,
+        )
+
+    # monitor only the requested window
+    monitor_job_output(OUTPUT_DIR, window_len, conf_file_path)
+
+    print(f"Execution seconds: {time.time() - start_t}", flush=True)
 
 
 def monitor_job_output(
     output_directory: str, total_images: int, file_extension: str
 ) -> None:
     """
-    Monitor the output directory until all images are processed.
-
-    Args:
-        output_directory (str): Path to the directory to monitor.
-        total_images (int): Total number of expected images.
-        file_extension (str): File extension to monitor for.
-
-    Returns:
-        None
+    Monitor OUTPUT_DIR/HA until total_images files appear (subset-aware).
     """
+    start_time = time.time()
     time.sleep(1)
     tmp_count = len(glob.glob(f"{output_directory}/HA/*"))
     while True:
         current_files_count = len(glob.glob(f"{output_directory}/HA/*"))
 
-        print(f"{current_files_count}/{total_images} processed")
+        processed = current_files_count
+        print(f"{processed}/{total_images} processed", flush=True)
 
         if current_files_count > tmp_count:
-            rate = current_files_count - tmp_count  # images per minute
-            remaining_time = (total_images - current_files_count) / rate  # minutes
+            rate = current_files_count - tmp_count  # images per minute (since we sleep 60s)
+            remaining = max(total_images - processed, 0)
+            eta_min = remaining / rate if rate > 0 else float("inf")
             print(
-                f"{current_files_count - tmp_count} images processed in 60sec. Approximately {remaining_time:.2f} minutes remaining"
+                f"{current_files_count - tmp_count} images processed in 60sec. "
+                f"Approximately {eta_min:.2f} minutes remaining",
+                flush=True,
             )
         tmp_count = current_files_count
 
-        if current_files_count >= total_images:
+        if processed >= total_images:
             break
 
-        print("\nWaiting 60 seconds...\n")
+        print(f"Processing time (s): {time.time() - start_time:.1f}", flush=True)
+        print("\nWaiting 60 seconds...\n", flush=True)
         time.sleep(60)
-
-
-def slurm_launcher(conf_file_path: str) -> None:
-    """
-    Launch Slurm jobs for 3D data processing.
-
-    Args:
-        conf_file_path (str): Path to the configuration file.
-
-    Returns:
-        None
-    """
-    try:
-        params = read_conf_file(conf_file_path)
-    except Exception as e:
-        print(f"⚠️  Error reading parameter file '{conf_file_path}': {e}")
-        sys.exit(1)
-
-    # Extracting parameters safely using .get() with defaults where necessary
-    VOLUME_PATH = params.get("IMAGES_PATH", "")
-    OUTPUT_DIR = params.get("OUTPUT_PATH", "./output")
-    N_CHUNK = params.get("N_CHUNK", 100)
-    IS_TEST = params.get("TEST", False)
-
-    if IS_TEST == True:
-        sys.exit(
-            "Test mode activated, run directly 3D_processing.py or deactivate test mode in the parameter file"
-        )
-
-    data_reader = DataReader(VOLUME_PATH)
-
-    mem_needed = 128
-
-    def chunk_split(num_images: int, n: int) -> list[tuple[int, int]]:
-        """
-        Split a range of images into smaller intervals (chunks) for processing.
-
-        Args:
-            num_images (int): Total number of images.
-            n (int): Number of chunks to divide the images into.
-
-        Returns:
-            List[Tuple[int, int]]: List of tuples where each tuple represents
-                                    the start and end indices of a chunk.
-        """
-        # Calculate the number of images per interval
-        images_per_interval = num_images // n
-
-        print(f"Number of images per interval: {images_per_interval}")
-
-        # Create a list of intervals
-        intervals = []
-        start_index = 0
-        while start_index < num_images:
-            end_index = start_index + images_per_interval
-            intervals.append((start_index, end_index))  # Use tuple here
-            start_index = end_index
-        intervals[-1] = (
-            intervals[-1][0],
-            num_images,
-        )  # Ensure the last chunk ends at num_images
-
-        return intervals
-
-    n_jobs = math.ceil(data_reader.shape[0] / N_CHUNK)
-
-    index_intervals = chunk_split(data_reader.shape[0], n_jobs)
-
-    print(
-        f"Splitting data into {n_jobs} chunks of {N_CHUNK} slices each for processing"
-    )
-
-    # Split the index_intervals into batches of max length 1000
-    N_job_max_per_array = 999
-    batched_intervals = [
-        index_intervals[i : i + N_job_max_per_array]
-        for i in range(0, len(index_intervals), N_job_max_per_array)
-    ]
-
-    print(
-        f"Launching {len(batched_intervals)} batches of jobs (Number of jobs: {[len(b) for b in batched_intervals]})"
-    )
-
-    answer = input("Do you want to continue? [y]\n")
-    if "n" in answer.lower():
-        sys.exit("Aborted by user")
-
-    python_file_path = os.path.abspath(inspect.getfile(compute_orientation))
-
-    # Launch each batch
-    for batch in batched_intervals:
-        start, end = batch[0][0], batch[-1][1]
-
-        if is_chunk_done(
-            OUTPUT_DIR, start, end, output_format=params.get("OUTPUT_FORMAT", "jp2")
-        ):
-            print(f"✅ Chunk {start}-{end} already done. Skipping.")
-            continue
-
-        job_id = submit_job_to_slurm(
-            python_file_path,
-            conf_file_path,
-            start,
-            end,
-            N_chunk=N_CHUNK,
-            mem_needed=mem_needed,
-        )
-        print(
-            f"Submitted job for batch starting at {start} and ending at {end} (job ID: {job_id})"
-        )
-        time.sleep(400)
-
-    monitor_job_output(OUTPUT_DIR, data_reader.shape[0], conf_file_path)
-
-    return
 
 
 def is_chunk_done(
