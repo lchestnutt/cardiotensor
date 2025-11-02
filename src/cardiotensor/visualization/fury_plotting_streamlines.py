@@ -134,6 +134,10 @@ class StreamlineViewer:
         self.radius = max(0.0001, float(line_width) * self.radius_scale)
         self.linewidth = max(1.0, float(line_width))
 
+        self.scale_bar = None
+        self.scale_bar_on = False
+        self._add_scale_bar()
+
         # VTK/FURY objects
         self.showm: Optional[window.ShowManager] = None
 
@@ -283,6 +287,30 @@ class StreamlineViewer:
         self._render_now()
 
 
+    def _add_scale_bar(self):
+        # 2D overlay ruler that tracks camera zoom
+        self.scale_bar = vtk.vtkLegendScaleActor()
+        # Show only one axis for a clean look
+        self.scale_bar.LeftAxisVisibilityOff()
+        self.scale_bar.TopAxisVisibilityOff()
+        self.scale_bar.RightAxisVisibilityOff()
+        self.scale_bar.BottomAxisVisibilityOn()
+
+        # Optional niceties (comment out if version differs)
+        try:
+            self.scale_bar.SetNumberOfLabels(5)
+            self.scale_bar.SetCornerOffset(5)  # pixels off the corner
+            # self.scale_bar.GetRightAxis().SetTitle("mm")  # if your coords are mm
+            # self.scale_bar.GetBottomAxis().SetTitle("mm")
+        except Exception:
+            pass
+
+        # Add as a 2D actor to the renderer (FURY scene is a vtkRenderer)
+        self.scene.add(self.scale_bar)
+        self.scale_bar_on = True
+        
+
+
 
     def _render_now(self):
         """Force an immediate redraw after pipeline/state changes."""
@@ -367,13 +395,45 @@ class StreamlineViewer:
             self._render_now()
             print(f"Background set to {self.current_bg}")
 
+        elif key == 's':
+            if self.scale_bar is None:
+                self._add_scale_bar()
+            else:
+                if self.scale_bar_on:
+                    self.scene.rm(self.scale_bar)
+                    self.scale_bar_on = False
+                    print("Scale bar OFF")
+                else:
+                    self.scene.add(self.scale_bar)
+                    self.scale_bar_on = True
+                    print("Scale bar ON")
+            self._render_now()
+
+        elif key == 'p':
+            # save current view as high-resolution PNG
+            import datetime, os
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            out_path = os.path.abspath(f"view_{ts}_hires.png")
+            try:
+                highres_size = (2000, 2000)
+                fury.window.record(
+                    scene=self.scene,
+                    out_path=out_path,
+                    size=highres_size,
+                    reset_camera=False,
+                )
+                print(f"Saved high-resolution screenshot to {out_path} ({highres_size[0]}×{highres_size[1]})")
+            except Exception as e:
+                print(f"Failed to save screenshot: {e}")
+
         elif key == 'r':
             self.plane_rep.SetOrigin(*self.center)
             self.plane_rep.SetNormal(1, 0, 0)
             self.plane_rep.UpdatePlacement()
             self._sync_plane_from_widget()
             self.clipper.Update()
-            self._render_now()           # <-- add
+            self._render_now() 
+            print("Oblique plane reset to center/aligned.")         
 
         elif key in ('plus', 'equal', 'kp_add'):
             if self.mode == 'tube':
@@ -381,7 +441,7 @@ class StreamlineViewer:
             else:
                 self.linewidth = min(1000.0, self.linewidth * 1.25)
             self._apply_thickness()
-            self._render_now()           # <-- add
+            self._render_now()           
 
         elif key in ('minus', 'kp_subtract', 'underscore'):
             if self.mode == 'tube':
@@ -389,7 +449,7 @@ class StreamlineViewer:
             else:
                 self.linewidth = max(1.0, self.linewidth * 0.8)
             self._apply_thickness()
-            self._render_now()           # <-- add
+            self._render_now()           
 
             self.showm.render()
             print(f"Thickness ↓ → radius={self.radius:.5f} / lw={self.linewidth:.2f}")
@@ -416,7 +476,7 @@ class StreamlineViewer:
             self.showm.iren.AddObserver('KeyPressEvent', self._on_keypress)
 
             self.scene.reset_camera()
-            print("🕹️ Keys: 'O' toggle plane, 'I' flip side, 'R' reset, '+/-' thickness, 'B' change background color.")
+            print("🕹️ Keys: 'O' toggle plane, 'I' flip side, 'R' reset cropping plane, '+/-' thickness, 'B' background, 'S' scale bar, 'P' save PNG.")
             self.showm.start()
         else:
             if not screenshot_path:
