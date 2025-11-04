@@ -36,6 +36,8 @@ dependencies = [
     "structure-tensor>=0.3.0",
     "tifffile",
     "tqdm",
+    "nibabel",
+    "dipy",
 ]
 description = "Toolkit designed for quantifying and visualising 3D cardiomyocytes orientations in heart images"
 keywords = ["cardiotensor, cardiomyocytes, heart, orientation, structure tensor, image processing"]
@@ -69,6 +71,7 @@ git = [
 [project.scripts]
 cardio-analysis = "cardiotensor.scripts.gui_analysis_tool:script"
 cardio-generate-streamlines = "cardiotensor.scripts.generate_streamlines:script"
+cardio-analysis-streamlines = "cardiotensor.scripts.analysis_streamlines:script"
 cardio-tensor = "cardiotensor.scripts.compute_orientation:script"
 cardio-tensor-slurm = "cardiotensor.scripts.slurm_launcher:script"
 cardio-visualize-streamlines = "cardiotensor.scripts.visualize_streamlines:script"
