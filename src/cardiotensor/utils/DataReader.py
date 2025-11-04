@@ -234,6 +234,11 @@ class DataReader:
                 k = int(round(1.0 / f))
                 return k if k >= 1 and abs(f - (1.0 / k)) < 1e-1 else None
 
+
+            # init all factors to None
+            kz = ky = kx = None
+            dz = dy = dx = None
+
             # Z
             if fz > 1:
                 kz = _as_int_factor_up(fz)
@@ -269,11 +274,16 @@ class DataReader:
                 if dx is None:
                     raise ValueError(f"Non-integer downsample factor on X: {fx}")
                 volume = block_reduce(volume, block_size=(1, 1, dx), func=np.max)
-            
-            import pdb; pdb.set_trace()
-            
-            print(f"Resample factors: [{kz}, {ky}, {kx}]")
+                        
+            def _fmt(k, d):
+                if k is not None:
+                    return f"x{k}"
+                if d is not None:
+                    return f"/{d}"
+                return "x1"
 
+            print(f"Applied integer resampling: Z {_fmt(kz, dz)}, Y {_fmt(ky, dy)}, X {_fmt(kx, dx)}")
+            
             # Enforce exact shape 
             volume = _fit(volume, (z1, y1, x1), pad_value=0)
 
@@ -581,3 +591,5 @@ def _load_raw_data_with_mhd(
     # End 3D fix
 
     return (data, meta_dict)
+
+
