@@ -270,6 +270,8 @@ class DataReader:
                     raise ValueError(f"Non-integer downsample factor on X: {fx}")
                 volume = block_reduce(volume, block_size=(1, 1, dx), func=np.max)
             
+            import pdb; pdb.set_trace()
+            
             print(f"Resample factors: [{kz}, {ky}, {kx}]")
 
             # Enforce exact shape 
@@ -319,61 +321,109 @@ class DataReader:
         return img
 
 
+
+
     def _load_image_stack(
         self, file_list: list[Path], start_index: int, end_index: int
     ) -> np.ndarray:
         """
-        Loads a stack of images into a 3D NumPy array.
-
-        Args:
-            file_list (List[Path]): List of file paths to load.
-            start_index (int): Start index for slicing.
-            end_index (int): End index for slicing.
-
-        Returns:
-            np.ndarray: Loaded volume as a 3D array.
+        Efficiently loads a stack of images into a 3D (or 4D for vector .npy) NumPy array
+        by preallocating the output and filling it in place. Uses a bounded thread pool
+        for I/O bound reads and keeps slice order via indices.
         """
+        
         if end_index == 0:
             end_index = len(file_list)
 
-        total_files = end_index - start_index
-        # print(f"Loading {total_files} files...")
-
-        if start_index < 0 or end_index > len(file_list):
+        if start_index < 0 or end_index > len(file_list) or start_index >= end_index:
             raise ValueError(
                 f"Invalid indices: start_index={start_index}, end_index={end_index}, total_files={len(file_list)}"
             )
 
-        with alive_bar(total_files, title="Loading Volume", length=40) as bar:
+        paths = sorted(file_list[start_index:end_index])
+        total_files = len(paths)
 
-            def progress_bar_reader(file_path: Path) -> np.ndarray:
-                bar()  # Update the progress bar
-                return self._custom_image_reader(file_path)
+        # Probe first slice to determine per slice shape and dtype
+        first = self._custom_image_reader(paths[0])
+        slice_shape = first.shape
+        slice_dtype = first.dtype
 
-            delayed_tasks = [
-                dask.delayed(progress_bar_reader)(file_path)
-                for file_path in sorted(file_list[start_index:end_index])
-            ]
+        # Preallocate output with correct layout
+        if self.volume_info["type"] == "npy" and first.ndim == 3 and first.shape[0] == 3:
+            # Vector field stored per file as (3, Y, X) -> target (3, Z, Y, X)
+            out_shape = (3, total_files, slice_shape[1], slice_shape[2])
+            volume = np.empty(out_shape, dtype=slice_dtype)
 
-            # Compute the volume
-            computed_data = dask.compute(*delayed_tasks, scheduler="threads")
+            # Place first slice
+            volume[:, 0, :, :] = first
+            start_fill_idx = 1
 
-            # Validate shape consistency
-            first_shape = computed_data[0].shape
-            for idx, data in enumerate(computed_data):
-                if data.shape != first_shape:
+            def _assign(z_idx: int, arr: np.ndarray):
+                if arr.shape != slice_shape:
                     raise ValueError(
-                        f"Inconsistent file shape at index {idx}: Expected {first_shape}, got {data.shape}"
+                        f"Inconsistent file shape at z {z_idx}: expected {slice_shape}, got {arr.shape}"
                     )
+                volume[:, z_idx, :, :] = arr
 
-        # Combine into a NumPy array
-        print("Stacking images into a 3D volume...")
-        if self.volume_info["type"] == "npy":
-            volume = np.stack(computed_data, axis=1)
         else:
-            volume = np.stack(computed_data, axis=0)
+            # Scalar per file, typical 2D image -> target (Z, Y, X)
+            if first.ndim == 3:
+                # handle RGB or multi channel by squeezing single channel if needed
+                # if you want to allow multi channel volumes, adapt here
+                # for now, enforce 2D
+                if first.shape[2] == 1:
+                    first = first[:, :, 0]
+                    slice_shape = first.shape
+                else:
+                    raise ValueError(
+                        f"Expected 2D slice, got 3D with shape {first.shape}. Adjust reader if you need multi channel."
+                    )
+            out_shape = (total_files, slice_shape[0], slice_shape[1])
+            volume = np.empty(out_shape, dtype=first.dtype)
+
+            # Place first slice
+            volume[0, :, :] = first
+            start_fill_idx = 1
+
+            def _assign(z_idx: int, arr: np.ndarray):
+                if arr.ndim == 3 and arr.shape[2] == 1:
+                    arr = arr[:, :, 0]
+                if arr.shape != slice_shape:
+                    raise ValueError(
+                        f"Inconsistent file shape at z {z_idx}: expected {slice_shape}, got {arr.shape}"
+                    )
+                volume[z_idx, :, :] = arr
+
+
+        max_workers = min(8, (os.cpu_count() or 8))
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _read_one(local_idx: int, p: Path):
+            # local_idx is index within this slice of paths
+            arr = self._custom_image_reader(p)
+            return local_idx, arr
+
+        # Fill the rest with a progress bar
+        with alive_bar(total_files, title="Loading Volume", length=40) as bar:
+            # We already placed index 0
+            bar()  # account for the first already loaded slice
+
+            if start_fill_idx < total_files:
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures = {
+                        ex.submit(_read_one, i, p): i
+                        for i, p in enumerate(paths[start_fill_idx:], start=start_fill_idx)
+                    }
+                    for fut in as_completed(futures):
+                        z_idx, arr = fut.result()
+                        _assign(z_idx, arr)
+                        bar()
+
 
         return volume
+
+
 
     def check_memory_requirement(self, shape, dtype, safety_factor=0.8):
         """
