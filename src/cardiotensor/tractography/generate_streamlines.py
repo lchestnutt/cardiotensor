@@ -1,8 +1,12 @@
 import math
 from pathlib import Path
-
 import numpy as np
 from alive_progress import alive_bar
+
+import nibabel as nib
+from dipy.io.stateful_tractogram import StatefulTractogram, Space, Origin
+from dipy.io.streamline import save_trk
+
 
 from cardiotensor.utils.DataReader import DataReader
 from cardiotensor.utils.downsampling import downsample_vector_volume, downsample_volume
@@ -244,6 +248,58 @@ def generate_streamlines_from_vector_field(
     return all_streamlines
 
 
+def save_trk_dipy_from_vox_zyx(
+    streamlines_zyx: list[list[tuple[float, float, float]]],
+    out_path: str | Path,
+    vol_shape_zyx: tuple[int, int, int],
+    voxel_sizes_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    data_per_point: list[dict[str, np.ndarray]] | None = None,
+):
+    """
+    Save streamlines given in voxel indices (z, y, x) as a TrackVis .trk using DIPY.
+    """
+    Z, Y, X = vol_shape_zyx
+    vz, vy, vx = voxel_sizes_zyx
+
+    # reference affine, voxel index -> RAS mm, axes x,y,z
+    affine = np.array([
+        [vx, 0,  0,  0],
+        [0,  vy, 0,  0],
+        [0,  0,  vz, 0],
+        [0,  0,  0,  1],
+    ], dtype=np.float32)
+
+    # DIPY expects NIfTI with shape (X, Y, Z)
+    ref_img = nib.Nifti1Image(np.zeros((X, Y, Z), dtype=np.uint8), affine)
+
+    # reorder each streamline from (z,y,x) to (x,y,z)
+    sl_xyz_vox = [np.stack([np.asarray(sl)[:, 2],
+                             np.asarray(sl)[:, 1],
+                             np.asarray(sl)[:, 0]], axis=1).astype(np.float32)
+                  for sl in streamlines_zyx]
+
+    sft = StatefulTractogram(
+        sl_xyz_vox,
+        ref_img,
+        Space.VOX,
+        origin=Origin.TRACKVIS,
+    )
+
+    if data_per_point is not None:
+        if len(data_per_point) != len(sl_xyz_vox):
+            raise ValueError("data_per_point length must equal number of streamlines")
+        
+        from nibabel.streamlines.array_sequence import ArraySequence
+        sft.data_per_point = {
+            "HA": ArraySequence([np.asarray(ha, dtype=np.float32).reshape(-1, 1)
+                                for ha in data_per_point])
+        }
+
+
+    save_trk(sft, str(out_path), bbox_valid_check=False)
+
+
+   
 def generate_streamlines_from_params(
     vector_field_dir: str | Path,
     output_dir: str | Path,
@@ -261,7 +317,10 @@ def generate_streamlines_from_params(
     angle_threshold: float = 60.0,
     min_length_pts: int = 10,
     bidirectional: bool = True,
+    voxel_sizes_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0), 
+    save_trk_file: bool = True,                                    
 ) -> None:
+
     """
     Generate streamlines from a vector field and save to NPZ.
 
@@ -434,11 +493,33 @@ def generate_streamlines_from_params(
             for sl in streamlines
         ]
 
-    # --- Save output (ragged lists => dtype=object) ---
-    out_path = output_dir / "streamlines.npz"
+    # --- Save NPZ ---
+    out_npz = output_dir / "streamlines.npz"   # fixed typo
     np.savez_compressed(
-        out_path,
+        out_npz,
         streamlines=np.array(streamlines, dtype=object),
         ha_values=np.array(ha_values_per_streamline, dtype=object),
     )
-    print(f"✅ Saved {len(streamlines)} streamlines and HA (per-vertex) to {out_path}")
+    print(f"Saved {len(streamlines)} streamlines and HA to {out_npz}")
+
+    # --- Save TRK with DIPY ---
+    if save_trk_file:
+        # current cropped volume shape in Z,Y,X after slicing
+        Zc = end_z_binned - start_z_binned
+        Yc = end_y_binned - start_y_binned
+        Xc = end_x_binned - start_x_binned
+
+        # if you rescaled coordinates back to full res when bin_factor>1, voxel sizes stay the same
+        # if you did not rescale, you could multiply voxel_sizes by bin_factor instead
+
+        out_trk = output_dir / "streamlines.trk"
+
+        save_trk_dipy_from_vox_zyx(
+            streamlines_zyx=streamlines,
+            out_path=out_trk,
+            vol_shape_zyx=(Zc, Yc, Xc),
+            voxel_sizes_zyx=voxel_sizes_zyx,
+            data_per_point=ha_values_per_streamline,
+        )
+
+        print(f"Saved TRK to {out_trk}")
