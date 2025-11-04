@@ -342,7 +342,6 @@ def generate_streamlines_from_params(
 
     # --- Load vector field ---
     print("📥 Loading vector field...")
-
     vec_reader = DataReader(vec_load_dir)
     vector_field = vec_reader.load_volume(
         start_index=start_z_binned, end_index=end_z_binned
@@ -350,26 +349,28 @@ def generate_streamlines_from_params(
 
     # Ensure channel order (3, Z, Y, X)
     if vector_field.ndim == 4 and vector_field.shape[-1] == 3:
+        print("Reordering vector field axes for consistency...")
         vector_field = np.moveaxis(vector_field, -1, 0)
 
     # Flip vectors for consistency
+    print("Ensuring consistent vector orientations...")
     neg_mask = vector_field[0] < 0
     vector_field[:, neg_mask] *= -1
 
     # --- Mask if provided ---
     if mask_path:
-        print(f"🩹 Applying mask: {mask_path}")
+        print("Loading mask volume...")
         mask_reader = DataReader(mask_path)
-
         mask = mask_reader.load_volume(
             start_index=start_z_binned,
             end_index=end_z_binned,
             unbinned_shape=vec_reader.shape[1:],  # (Z, Y, X)
         )
-
+        print("Cropping mask volume...")
         mask = mask[:, start_y_binned:end_y_binned, start_x_binned:end_x_binned]
         mask = (mask > 0).astype(np.uint8)
 
+        print("Applying mask to vector field...")
         vector_field[:, mask == 0] = np.nan
 
     # --- Load FA and create seed points ---
@@ -379,6 +380,7 @@ def generate_streamlines_from_params(
     )
     fa_volume = fa_volume[:, start_y_binned:end_y_binned, start_x_binned:end_x_binned]
 
+    print("Selecting seed points...")
     seed_mask = fa_volume > (fa_seed_min * 255)
     valid_indices = np.argwhere(seed_mask)
     if len(valid_indices) < num_seeds:
