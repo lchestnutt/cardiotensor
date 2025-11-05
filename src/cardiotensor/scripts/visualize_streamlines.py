@@ -169,7 +169,7 @@ def script():
                 f"(Derived from OUTPUT_PATH in {args.input_path})"
             )
             sys.exit(1)
-    elif suffix == ".npz":
+    elif suffix == ".npz" or suffix == ".trk":
         # Direct .npz provided
         streamlines_file = args.input_path
     else:
