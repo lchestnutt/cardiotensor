@@ -34,7 +34,7 @@ def script():
     parser.add_argument("--bin", type=int, default=1, help="Downsampling factor")
     parser.add_argument("--seeds", type=int, default=20000, help="Number of seeds")
     parser.add_argument("--fa-seed-min", type=float, default=0.2, help="Min FA for seeding")
-    parser.add_argument("--fa-threshold", type=float, default=0.07, help="FA threshold")
+    parser.add_argument("--fa-threshold", type=float, default=0.1, help="FA threshold")
     parser.add_argument("--step", type=float, default=0.5, help="Step length in voxels")
     parser.add_argument(
         "--max-steps", type=int, default=None, help="Max steps per streamline"

@@ -2,6 +2,7 @@ import math
 from pathlib import Path
 import numpy as np
 from alive_progress import alive_bar
+from typing import List, Optional, Tuple, Sequence, Union
 
 import nibabel as nib
 from dipy.io.stateful_tractogram import StatefulTractogram, Space, Origin
@@ -10,6 +11,7 @@ from dipy.io.streamline import save_trk
 
 from cardiotensor.utils.DataReader import DataReader
 from cardiotensor.utils.downsampling import downsample_vector_volume, downsample_volume
+from cardiotensor.utils.am_utils import write_spatialgraph_am
 
 
 def trilinear_interpolate_vector(
@@ -299,6 +301,7 @@ def save_trk_dipy_from_vox_zyx(
     save_trk(sft, str(out_path), bbox_valid_check=False)
 
 
+
    
 def generate_streamlines_from_params(
     vector_field_dir: str | Path,
@@ -523,3 +526,21 @@ def generate_streamlines_from_params(
         )
 
         print(f"Saved TRK to {out_trk}")
+
+
+
+    # --- Save Amira SpatialGraph (.am) ---
+    # After you build `streamlines` in (z,y,x), convert to (x,y,z)
+    streamlines_xyz = [np.stack([sl[:,2], sl[:,1], sl[:,0]], axis=1) for sl in map(np.asarray, streamlines)]
+    # Optional thickness, for example map HA to a radius
+    thickness = None  # or [np.full(len(sl), 1.0, float) for sl in streamlines_xyz]
+
+    edge_HA = np.array([float(np.nanmean(vals)) for vals in ha_values_per_streamline], dtype=float)
+
+    write_spatialgraph_am(
+        out_path=output_dir / "streamlines_spatialgraph.am",
+        streamlines_xyz=streamlines_xyz,
+        point_thickness=None,         # writes 1.0 everywhere
+        edge_scalar=edge_HA,          # one value per streamline
+        edge_scalar_name="HA"     # appears as EDGE { float HA } @6
+    )

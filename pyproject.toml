@@ -76,6 +76,8 @@ cardio-tensor = "cardiotensor.scripts.compute_orientation:script"
 cardio-tensor-slurm = "cardiotensor.scripts.slurm_launcher:script"
 cardio-visualize-streamlines = "cardiotensor.scripts.visualize_streamlines:script"
 cardio-visualize-vector = "cardiotensor.scripts.visualize_vector_field:script"
+cardio-trk_2_am = "cardiotensor.scripts.convert_trk_to_am:script"
+
 
 [project.urls]
 Documentation = "https://www.josephbrunet.fr/cardiotensor/"
