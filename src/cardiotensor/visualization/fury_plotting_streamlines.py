@@ -102,6 +102,8 @@ class StreamlineViewer:
         self.scale_bar_on = False
         self._add_scale_bar()
 
+        self.clipping_active = False  # Track clipping state
+
         # VTK/FURY objects
         self.showm: Optional[window.ShowManager] = None
 
@@ -132,10 +134,13 @@ class StreamlineViewer:
         if self.mode == "tube":
             self.actor0 = actor.streamtube(
                 self.streamlines_xyz,
-                colors=self.flat_vals,            # scalars
+                colors=self.flat_vals,
                 linewidth=self.linewidth,
                 spline_subdiv=0,
-                lookup_colormap=self.lut
+                lookup_colormap=self.lut,
+                lod=False,                 # <—
+                lod_points=20000,         # optional, tune
+                lod_points_size=2         # optional, tune
             )
         else:
             self.actor0 = actor.line(
@@ -146,6 +151,19 @@ class StreamlineViewer:
             )
 
         self.scene.add(self.actor0)
+        
+        # fast actor for interaction (cheap line rendering)
+        self.actor_fast = actor.line(
+            self.streamlines_xyz,
+            colors=self.flat_vals,          # pass scalars
+            linewidth=1.0,                  # very light
+            lookup_colormap=self.lut,
+            lod=False,                      # make it deterministic
+            fake_tube=True,                 # a bit of shading to hint tubes
+        )
+        self.actor_fast.SetVisibility(False)
+        self.scene.add(self.actor_fast)
+                
 
         # clipping plane setup, start disabled
         self.plane_rep = vtk.vtkImplicitPlaneRepresentation()
@@ -175,7 +193,7 @@ class StreamlineViewer:
             pass
         if self.showm is not None:
             self.showm.render()
-
+        
     def _sync_plane_from_widget(self, *_):
         origin = [0.0, 0.0, 0.0]
         normal = [1.0, 0.0, 0.0]
@@ -183,7 +201,8 @@ class StreamlineViewer:
         self.plane_rep.GetNormal(normal)
         self.plane_fn.SetOrigin(origin)
         self.plane_fn.SetNormal(normal)
-        self._render_now()
+        
+
 
     def _add_scale_bar(self):
         self.scale_bar = vtk.vtkLegendScaleActor()
@@ -198,6 +217,23 @@ class StreamlineViewer:
             pass
         self.scene.add(self.scale_bar)
         self.scale_bar_on = True
+
+    def _toggle_clipping(self):
+        """Toggle clipping state."""
+        if self.clipping_active:
+            # Deactivate clipping
+            self.actor0.GetMapper().RemoveAllClippingPlanes()
+            self.actor_fast.GetMapper().RemoveAllClippingPlanes()
+            self.clipping_active = False
+            print("Clipping OFF")
+        else:
+            # Activate clipping
+            self.actor0.GetMapper().AddClippingPlane(self.plane_fn)
+            self.actor_fast.GetMapper().AddClippingPlane(self.plane_fn)
+            self.clipping_active = True
+            print("Clipping ON")
+
+        self._render_now()
 
     def _rebuild_unclipped_actor(self):
         clipping_on = self.mapper0.GetNumberOfClippingPlanes() > 0 if self.mapper0 is not None else False
@@ -214,7 +250,10 @@ class StreamlineViewer:
                 colors=self.flat_vals,
                 linewidth=self.linewidth,
                 spline_subdiv=0,
-                lookup_colormap=self.lut
+                lookup_colormap=self.lut,
+                lod=False,                 # <—
+                lod_points=20000,         # optional, tune
+                lod_points_size=2         # optional, tune
             )
         else:
             self.actor0 = actor.line(
@@ -237,17 +276,7 @@ class StreamlineViewer:
         key = obj.GetKeySym().lower()
 
         if key == 'o':
-            if self.plane_widget.GetEnabled():
-                self.plane_widget.EnabledOff()
-                self.mapper0.RemoveAllClippingPlanes()
-                print("Clipping OFF")
-            else:
-                self.plane_widget.EnabledOn()
-                self.mapper0.RemoveAllClippingPlanes()
-                self.mapper0.AddClippingPlane(self.plane_fn)
-                self._sync_plane_from_widget()
-                print("Clipping ON, drag gizmo to move")
-            self._render_now()
+           self._toggle_clipping()
 
         elif key == 'h':
             if self.plane_widget:
@@ -327,6 +356,40 @@ class StreamlineViewer:
             self._render_now()
             print(f"Thickness down, lw={self.linewidth:.2f}")
 
+
+
+    
+    def _lod_on(self, obj=None, evt=None):
+        """Activate low-res actor for interaction, and apply clipping only if it was previously enabled."""
+        try:
+            # Hide the full-res actor and show the low-res actor
+            self.actor0.SetVisibility(False)  
+            self.actor_fast.SetVisibility(True)
+
+            # Apply clipping only if it was previously enabled
+            if self.clipping_active:
+                self.actor_fast.GetMapper().AddClippingPlane(self.plane_fn)  # Apply clipping to the fast actor
+        except Exception:
+            pass
+        self._render_now()
+
+    def _lod_off(self, obj=None, evt=None):
+        """Switch back to full-res actor, applying clipping if it was previously enabled."""
+        # Rebuild actor to ensure it shows at full resolution with clipping applied
+        self._rebuild_unclipped_actor()
+
+        try:
+            self.actor_fast.SetVisibility(False)  # Hide the fast actor
+            self.actor0.SetVisibility(True)  # Show the full-res actor
+
+            # Apply clipping to the full-res actor if it was previously enabled
+            if self.clipping_active:
+                self.actor0.GetMapper().AddClippingPlane(self.plane_fn)  # Reapply clipping
+        except Exception:
+            pass
+        self._render_now()
+
+
     # ---------------------------
     # main entry
     # ---------------------------
@@ -337,7 +400,19 @@ class StreamlineViewer:
 
             iren = self.showm.iren
             iren.SetDesiredUpdateRate(60.0)
-            iren.SetStillUpdateRate(2.0)
+            iren.SetStillUpdateRate(30.0)  # higher so it returns to full-res
+
+            # ensure anti-alias looks good when idle
+            try:
+                self.showm.renwin.SetMultiSamples(0)
+                self.scene.enable_anti_aliasing('fxaa')
+            except Exception:
+                pass
+
+            # switch LOD on drag only
+            iren.AddObserver(vtk.vtkCommand.StartInteractionEvent, self._lod_on)
+            iren.AddObserver(vtk.vtkCommand.EndInteractionEvent, self._lod_off)
+
 
             self.plane_widget = vtk.vtkImplicitPlaneWidget2()
             self.plane_widget.SetRepresentation(self.plane_rep)
