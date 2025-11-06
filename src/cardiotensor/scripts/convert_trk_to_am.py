@@ -53,6 +53,7 @@ def script():
     edge_name = args.edge_name
     if args.edge_scalar_source == "ha":
         if ha_list is None:
+            
             raise ValueError("No HA values available. For .trk save data_per_point['HA'], for .npz include ha_values")
         per_point = ha_to_degrees_per_streamline(ha_list)
         edge_vals = reduce_per_edge(per_point, args.edge_reduce)
@@ -76,5 +77,3 @@ def script():
     print(f"Wrote Amira SpatialGraph: {out_path}")
 
 
-if __name__ == "__main__":
-    main()
