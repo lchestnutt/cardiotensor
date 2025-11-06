@@ -74,6 +74,7 @@ def script() -> None:
     vertical_padding = params.get("VERTICAL_PADDING", None)
     write_vectors = params.get("WRITE_VECTORS", False)
     write_angles = params.get("WRITE_ANGLES", True)
+    angle_mode = params.get("ANGLE_MODE", "ha_ia")
     use_gpu = params.get("USE_GPU", True)
     is_test = params.get("TEST", False)
     n_slice_test = params.get("N_SLICE_TEST", None)
@@ -104,6 +105,7 @@ def script() -> None:
             axis_points=axis_points,
             vertical_padding=vertical_padding,
             write_vectors=write_vectors,
+            angle_mode=angle_mode,
             write_angles=write_angles,
             use_gpu=use_gpu,
             is_test=is_test,
@@ -147,6 +149,7 @@ def script() -> None:
             vertical_padding=vertical_padding,
             write_vectors=write_vectors,
             write_angles=write_angles,
+            angle_mode=angle_mode,
             use_gpu=use_gpu,
             is_test=is_test,
             n_slice_test=n_slice_test,
