@@ -3,6 +3,7 @@ import multiprocessing as mp
 import os
 import sys
 import time
+from typing import Tuple, Sequence
 
 import numpy as np
 from alive_progress import alive_bar
@@ -14,6 +15,7 @@ from cardiotensor.orientation.orientation_computation_functions import (
     calculate_structure_tensor,
     compute_fraction_anisotropy,
     compute_helix_and_transverse_angles,
+    compute_azimuth_and_elevation,
     interpolate_points,
     plot_images,
     remove_padding,
@@ -33,45 +35,84 @@ def check_already_processed(
     write_vectors: bool,
     write_angles: bool,
     output_format: str,
+    angle_names: Tuple[str, str] = ("HA", "IA"),
+    fa_name: str = "FA",
+    extra_expected: Sequence[str] | None = None,
 ) -> bool:
     """
-    Check whether all required output files already exist.
+    Check whether all required output files already exist for every slice index.
 
-    Args:
-        output_dir: Path to output directory.
-        start_index: Start slice index.
-        end_index: End slice index (exclusive).
-        write_vectors: If True, eigenvector fields are expected.
-        write_angles: If True, HA/IA/FA maps are expected.
-        output_format: Output image format (e.g., "jp2", "tif").
+    Parameters
+    ----------
+    output_dir : str
+        Base output directory.
+    start_index : int
+        First global slice index to check (inclusive).
+    end_index : int
+        Last global slice index to check (exclusive).
+    write_vectors : bool
+        If True, expect eigenvector .npy files (e.g., eigen_vec_{idx:06d}.npy).
+    write_angles : bool
+        If True, expect angle images for angle_names[0], angle_names[1], and FA.
+    output_format : str
+        Image format/extension for angles, for example "jp2" or "tif".
+    angle_names : tuple[str, str], optional
+        Names of the two angle outputs, e.g. ("HA", "IA") or ("AZ", "EL").
+    fa_name : str, optional
+        Name of the FA subfolder, default "FA".
+    extra_expected : sequence of str, optional
+        Additional per-slice path templates to check. Each template must contain
+        "{idx}" which will be formatted as a zero-padded integer (06d), and may
+        also contain "{ext}" for the image extension.
 
-    Returns:
-        bool: True if all expected files exist and are valid, else False.
+    Returns
+    -------
+    bool
+        True if all expected files for all indices exist (and pass the quick
+        corruption filter), False otherwise.
     """
+    if start_index >= end_index:
+        # Nothing to check
+        return True
+
+    # Normalize extension
+    ext = output_format.lstrip(".")
+    if not ext:
+        raise ValueError("output_format must be a non-empty extension like 'jp2' or 'tif'.")
+
+    # Prepare optional extras
+    extra_expected = tuple(extra_expected or ())
+
     for idx in range(start_index, end_index):
         expected_files = []
 
         if write_angles:
-            expected_files.extend(
-                [
-                    f"{output_dir}/HA/HA_{idx:06d}.{output_format}",
-                    f"{output_dir}/IA/IA_{idx:06d}.{output_format}",
-                    f"{output_dir}/FA/FA_{idx:06d}.{output_format}",
-                ]
-            )
+            a1, a2 = angle_names
+            expected_files += [
+                os.path.join(output_dir, a1, f"{a1}_{idx:06d}.{ext}"),
+                os.path.join(output_dir, a2, f"{a2}_{idx:06d}.{ext}"),
+                os.path.join(output_dir, fa_name, f"{fa_name}_{idx:06d}.{ext}"),
+            ]
 
         if write_vectors:
-            expected_files.append(f"{output_dir}/eigen_vec/eigen_vec_{idx:06d}.npy")
+            expected_files.append(
+                os.path.join(output_dir, "eigen_vec", f"eigen_vec_{idx:06d}.npy")
+            )
 
-        # Remove small/corrupted files before checking
+        # User-specified extras, if any
+        for tmpl in extra_expected:
+            expected_files.append(tmpl.format(idx=f"{idx:06d}", ext=ext))
+
+        # Remove small/corrupted files before checking (function defined elsewhere)
         remove_corrupted_files(expected_files)
 
-        # If any file is missing, processing is required
-        if not all(os.path.exists(file) for file in expected_files):
+        # If any file is missing, we need to process
+        if not all(os.path.exists(p) for p in expected_files):
             return False
 
-    print(f"Checking already processed files: All expected files exist in {output_dir}")
+    print(f"Checking already processed files: all expected files exist in {output_dir}")
     return True
+
 
 
 # --- main API ---
@@ -87,6 +128,7 @@ def compute_orientation(
     axis_points: np.ndarray | None = None,
     vertical_padding: float | None = None,
     write_vectors: bool = False,
+    angle_mode: str = "ha_ia",
     write_angles: bool = True,
     use_gpu: bool = True,
     is_test: bool = False,
@@ -121,6 +163,19 @@ def compute_orientation(
     if sigma > rho:
         raise ValueError("sigma must be <= rho")
 
+
+    if angle_mode.lower() == "ha_ia":
+        angle_names = ("HA", "IA")
+        angle_titles = ("Helix Angle", "Intrusion Angle")
+        angle_ranges = ((-90, 90), (-90, 90))
+    elif angle_mode.lower() == "az_el":
+        angle_names = ("AZ", "EL")
+        angle_titles = ("Azimuth", "Elevation")
+        angle_ranges = ((-180, 180), (-90, 90))
+    else:
+        raise ValueError("ANGLE_MODE must be 'ha_ia' or 'az_el'")
+
+
     print(f"""
 Parameters:
     - Volume path:    {volume_path}
@@ -131,10 +186,12 @@ Parameters:
     - sigma / rho:    {sigma} / {rho}
     - truncate:       {truncate}
     - Write angles:   {write_angles}
+    - Angle mode:     {angle_mode}  -> {angle_names[0]}, {angle_names[1]}
     - Write vectors:  {write_vectors}
     - Use GPU:        {use_gpu}
     - Test mode:      {is_test}
     """)
+
 
     print("\n" + "-" * 40)
     print("READING VOLUME INFORMATION")
@@ -153,14 +210,10 @@ Parameters:
     print("Check if file is already processed...")
     if (
         check_already_processed(
-            output_dir,
-            start_index,
-            end_index,
-            write_vectors,
-            write_angles,
-            output_format,
-        )
-        and not is_test
+            output_dir, start_index, end_index,
+            write_vectors, write_angles, output_format,
+            angle_names=angle_names
+        ) and not is_test
     ):
         print("\nAll images are already processed. Skipping computation.\n")
         return
@@ -271,19 +324,17 @@ Parameters:
         print(f"Using {mp.cpu_count()} CPU cores")
 
         def update_bar(_):
-            """Callback function to update progress bar."""
+            """Callback to tick the progress bar after each finished task."""
             bar()
 
-        # Limit the number of processors used to avoid exceeing the max number of handlers in Windows
+        # Limit number of processes to avoid exceeding handler limits on Windows
         if sys.platform.startswith("win"):
             num_procs = min(mp.cpu_count(), 59)
         else:
             num_procs = mp.cpu_count()
 
         with mp.Pool(processes=num_procs) as pool:
-            with alive_bar(
-                num_slices, title="Processing slices (Multiprocess)", bar="smooth"
-            ) as bar:
+            with alive_bar(num_slices, title="Processing slices (Multiprocess)", bar="smooth") as bar:
                 results = []
                 for z in range(num_slices):
                     result = pool.apply_async(
@@ -302,21 +353,19 @@ Parameters:
                             write_vectors,
                             write_angles,
                             is_test,
+                            angle_mode,  
                         ),
-                        callback=update_bar,  # ✅ Update progress bar after each task
+                        callback=update_bar,
                     )
                     results.append(result)
 
-                for result in results:
-                    result.wait()  # Ensure all tasks are completed before exiting
-
+                # Ensure all tasks complete before leaving the pool context
+                for r in results:
+                    r.wait()
     else:
-        # Add a progress bar for single-threaded processing
-        with alive_bar(
-            vec.shape[1], title="Processing slices (Single-thread)", bar="smooth"
-        ) as bar:
+        # Single threaded path with a progress bar
+        with alive_bar(vec.shape[1], title="Processing slices (Single-thread)", bar="smooth") as bar:
             for z in range(vec.shape[1]):
-                # Call the function directly
                 compute_slice_angles_and_anisotropy(
                     z,
                     vec[:, z, :, :],
@@ -331,10 +380,12 @@ Parameters:
                     write_vectors,
                     write_angles,
                     is_test,
+                    angle_mode,
                 )
-                bar()  # Update the progress bar for each slice
+                bar()
 
-    print(f"\n🤖 - Finished processing slices {start_index} - {end_index}")
+    end_index_local = start_index + vec.shape[1]
+    print(f"\nFinished processing slices {start_index} to {end_index_local}")
     print("---------------------------------\n\n")
     return
 
@@ -347,51 +398,49 @@ def compute_slice_angles_and_anisotropy(
     eigen_val_slice: np.ndarray,
     center_line: np.ndarray,
     output_dir: str,
-    output_format: str,
-    output_type: str,
-    start_index: int,
-    write_vectors: bool,
-    write_angles: bool,
-    is_test: bool,
+    output_format: str = "jp2",
+    output_type: str = "8bit",
+    start_index: int = 0,
+    write_vectors: bool = False,
+    write_angles: bool = True,
+    is_test: bool = False,
+    angle_mode: str = "ha_ia",
 ) -> None:
     """
-    Compute helix angles, transverse angles, and fractional anisotropy for a slice.
-
-    Args:
-        z (int): Index of the slice.
-        vector_field_slice (np.ndarray): Vector field for the slice.
-        img_slice (np.ndarray): Image data for the slice.
-        center_point (np.ndarray): Center point for alignment.
-        eigen_val_slice (np.ndarray): Eigenvalues for the slice.
-        center_line (np.ndarray): Center line for alignment.
-        output_dir (str): Directory to save the output.
-        output_format (str): Format for the output files (e.g., "tif").
-        output_type (str): Type of output (e.g., "8bits", "rgb").
-        start_index (int): Start index of the slice.
-        write_vectors (bool): Whether to output vector fields.
-        write_angles (bool): Whether to output angles and fractional anisotropy.
-        is_test (bool): Whether in test mode.
-
-    Returns:
-        None
+    Compute either HA/IA or Azimuth/Elevation plus FA for a single slice,
+    then plot and/or write outputs depending on flags.
     """
-    # print(f"Processing image: {start_index + z}")
+    # Decide angle labels and ranges based on mode
+    mode = angle_mode.lower().strip()
+    if mode == "ha_ia":
+        angle_names = ("HA", "IA")
+        angle_ranges = ((-90.0, 90.0), (-90.0, 90.0))
+    elif mode == "az_el":
+        angle_names = ("AZ", "EL")
+        angle_ranges = ((-180.0, 180.0), (-90.0, 90.0))
+    else:
+        raise ValueError("ANGLE_MODE must be 'ha_ia' or 'az_el'")
 
-    paths = []
+    ext = output_format.lstrip(".")
+    idx = start_index + z
+
+    # Expected outputs for skip logic
+    expected_paths = []
     if write_angles:
-        paths = [
-            f"{output_dir}/HA/HA_{(start_index + z):06d}.{output_format}",
-            f"{output_dir}/IA/IA_{(start_index + z):06d}.{output_format}",
-            f"{output_dir}/FA/FA_{(start_index + z):06d}.{output_format}",
+        a1, a2 = angle_names
+        expected_paths = [
+            os.path.join(output_dir, a1, f"{a1}_{idx:06d}.{ext}"),
+            os.path.join(output_dir, a2, f"{a2}_{idx:06d}.{ext}"),
+            os.path.join(output_dir, "FA", f"FA_{idx:06d}.{ext}"),
         ]
     if write_vectors:
-        paths.append(f"{output_dir}/eigen_vec/eigen_vec_{(start_index + z):06d}.npy")
+        expected_paths.append(os.path.join(output_dir, "eigen_vec", f"eigen_vec_{idx:06d}.npy"))
 
-    # Skip processing if files already exist (unless in test mode)
-    if not is_test and all(os.path.exists(path) for path in paths):
-        # print(f"File {(start_index + z):06d} already exists")
+    # Skip if all outputs are already present and we are not in test mode
+    if not is_test and expected_paths and all(os.path.exists(p) for p in expected_paths):
         return
 
+    # Build a small window around the slice index to estimate the local axis direction
     buffer = 5
     if z < buffer:
         VEC_PTS = center_line[: min(z + buffer, len(center_line))]
@@ -401,45 +450,58 @@ def compute_slice_angles_and_anisotropy(
         VEC_PTS = center_line[z - buffer : z + buffer]
 
     center_vec = calculate_center_vector(VEC_PTS)
-    # print(f"(Center vector: {center_vec})")
 
-    # Compute angles and FA if needed
+    # Compute FA and the chosen angle pair
     if write_angles or is_test:
         img_FA = compute_fraction_anisotropy(eigen_val_slice)
-        vector_field_slice_rotated = rotate_vectors_to_new_axis(
-            vector_field_slice, center_vec
-        )
-        img_helix, img_intrusion = compute_helix_and_transverse_angles(
-            vector_field_slice_rotated,
-            center_point,
-        )
+        vector_field_slice_rotated = rotate_vectors_to_new_axis(vector_field_slice, center_vec)
 
-    # Visualization in test mode
+        if mode == "ha_ia":
+            img_angle1, img_angle2 = compute_helix_and_transverse_angles(
+                vector_field_slice_rotated, center_point
+            )
+        else:  # "az_el"
+            img_angle1, img_angle2 = compute_azimuth_and_elevation(vector_field_slice_rotated)
+
+    # Test mode: visualize a 2x2 figure and write to test subfolder
     if is_test:
-        plot_images(img_slice, img_helix, img_intrusion, img_FA, center_point)
+        titles = ("Helix Angle", "Intrusion Angle") if mode == "ha_ia" else ("Azimuth", "Elevation")
+        plot_images(
+            img_slice,
+            img_angle1,
+            img_angle2,
+            img_FA,
+            center_point,
+            angle1_title=titles[0],
+            angle2_title=titles[1],
+        )
         write_images(
-            img_helix,
-            img_intrusion,
+            img_angle1,
+            img_angle2,
             img_FA,
             start_index,
-            output_dir + "/test_slice",
-            output_format,
+            os.path.join(output_dir, "test_slice"),
+            ext,
             output_type,
             z,
+            angle_names=angle_names,
+            angle_ranges=angle_ranges,
         )
         return
 
-    # Save results
+    # Persist outputs
     if write_angles:
         write_images(
-            img_helix,
-            img_intrusion,
+            img_angle1,
+            img_angle2,
             img_FA,
             start_index,
             output_dir,
-            output_format,
+            ext,
             output_type,
             z,
+            angle_names=angle_names,
+            angle_ranges=angle_ranges,
         )
     if write_vectors:
         write_vector_field(vector_field_slice, start_index, output_dir, z)
