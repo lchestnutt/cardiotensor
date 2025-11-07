@@ -166,12 +166,8 @@ def compute_orientation(
 
     if angle_mode.lower() == "ha_ia":
         angle_names = ("HA", "IA")
-        angle_titles = ("Helix Angle", "Intrusion Angle")
-        angle_ranges = ((-90, 90), (-90, 90))
     elif angle_mode.lower() == "az_el":
         angle_names = ("AZ", "EL")
-        angle_titles = ("Azimuth", "Elevation")
-        angle_ranges = ((-180, 180), (-90, 90))
     else:
         raise ValueError("ANGLE_MODE must be 'ha_ia' or 'az_el'")
 

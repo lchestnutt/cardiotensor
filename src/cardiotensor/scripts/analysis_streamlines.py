@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Union
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -89,7 +88,7 @@ def load_streamlines(path: Path, key: str | None = None) -> list[np.ndarray]:
     return [sl for sl in streamlines if sl.ndim == 2 and sl.shape[1] == 3]
 
 
-VoxelSize = Union[float, tuple[float, float, float]]
+VoxelSize = float | tuple[float, float, float]
 
 
 def _scale_phys(P: np.ndarray, voxel_size: VoxelSize) -> np.ndarray:
