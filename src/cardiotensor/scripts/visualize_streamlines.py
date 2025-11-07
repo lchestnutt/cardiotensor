@@ -2,13 +2,16 @@
 """
 visualize_streamlines.py
 ------------------------
-CLI tool to visualize cardiac streamlines from a .npz file using FURY.
-Supports coloring by helix angle or elevation, custom colormaps,
-and optional screenshot export.
+CLI tool to visualize cardiac streamlines from a .trk file using FURY.
 
-Now accepts either:
-  1) a .conf file (as before, reads OUTPUT_PATH/streamlines.npz), or
-  2) a direct path to streamlines .npz
+Input
+  1) a .conf file with OUTPUT_PATH, will use OUTPUT_PATH/streamlines.trk
+  2) a direct path to a .trk file
+
+Color-by
+  - elevation  computed from streamline geometry
+  - any per-point scalar stored in the TRK data_per_point, e.g. HA, IA, AZ, EL
+  - use --list-color-by to print all available options and exit
 """
 
 import argparse
@@ -16,169 +19,179 @@ import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import nibabel as nib
 
 from cardiotensor.colormaps.helix_angle import helix_angle_cmap
 from cardiotensor.utils.utils import read_conf_file
 from cardiotensor.visualization.streamlines import visualize_streamlines
 
 
-def script():
+def _discover_trk_color_fields(trk_path: Path) -> list[str]:
+    """Return list of available per-point scalar keys in TRK, case-preserving."""
+    obj = nib.streamlines.load(str(trk_path))
+    tg = obj.tractogram
+    dpp = getattr(tg, "data_per_point", None)
+    if not dpp:
+        return []
+    # keys can be e.g. "HA", "IA", "AZ", "EL", or custom
+    return list(dpp.keys())
+
+
+def _resolve_streamlines_path(input_path: Path) -> Path:
+    if not input_path.exists():
+        print(f"Input path not found: {input_path}")
+        sys.exit(1)
+    suf = input_path.suffix.lower()
+    if suf == ".conf":
+        params = read_conf_file(input_path)
+        out_dir = Path(params.get("OUTPUT_PATH", "./output"))
+        trk = out_dir / "streamlines.trk"
+        if not trk.exists():
+            print(f"streamlines.trk not found at: {trk}")
+            sys.exit(1)
+        return trk
+    if suf == ".trk":
+        return input_path
+    print("Unsupported input. Provide either a .conf file or a .trk file.")
+    sys.exit(1)
+
+
+def script() -> None:
     parser = argparse.ArgumentParser(
-        description=(
-            "Visualize cardiac streamlines.\n"
-            "Pass either a .conf file (will use OUTPUT_PATH/streamlines.npz) "
-            "or pass a streamlines .npz file directly.\n"
-            "You can color by helix angle (HA) or elevation angle, adjust rendering, crop, "
-            "and save screenshots."
-        ),
+        description="Visualize cardiac streamlines from .trk, color by elevation or stored per-point fields",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-
     parser.add_argument(
         "input_path",
         type=Path,
-        help=(
-            "Path to either a configuration file (.conf) containing OUTPUT_PATH, "
-            "or directly to a streamlines .npz file."
-        ),
+        help="Path to a .conf file with OUTPUT_PATH or directly a .trk file",
     )
     parser.add_argument(
         "--color-by",
-        choices=["ha", "elevation"],
-        default="ha",
-        help="Scalar quantity used for coloring the streamlines.",
+        type=str,
+        default="auto",
+        help="Which scalar to color by. Options include 'elevation' or any per-point field present in the TRK, e.g. HA, IA, AZ, EL. Use --list-color-by to see what is available. 'auto' prefers HA, else any available field, else elevation.",
     )
     parser.add_argument(
-        "--mode",
-        choices=["tube", "fake_tube", "line"],
-        default="tube",
-        help=(
-            "'tube': 3D tubes with lighting, "
-            "'fake_tube': flat but shaded lines, "
-            "'line': simple lines without shading."
-        ),
+        "--list-color-by",
+        action="store_true",
+        help="List available color-by options from the .trk and exit",
     )
     parser.add_argument(
         "--line-width",
         type=float,
-        default=4,
-        help="Line or tube width in display units.",
+        default=4.0,
+        help="Tube width",
     )
     parser.add_argument(
         "--subsample",
         type=int,
         default=1,
-        help="Keep every Nth streamline for faster rendering.",
+        help="Keep every Nth streamline for faster rendering",
     )
     parser.add_argument(
         "--min-length",
         type=int,
         default=None,
-        help="Filter out streamlines shorter than this length (in vertices).",
+        help="Filter out streamlines shorter than this number of vertices",
     )
     parser.add_argument(
         "--downsample-factor",
         type=int,
         default=1,
-        help="Keep every Nth vertex along each streamline.",
+        help="Keep every Nth vertex along each streamline",
     )
     parser.add_argument(
         "--max-streamlines",
         type=int,
         default=None,
-        help="Maximum number of streamlines to render (after filtering).",
+        help="Maximum number of streamlines to render after filtering",
     )
     parser.add_argument(
         "--crop-x",
         nargs=2,
         type=float,
         metavar=("XMIN", "XMAX"),
-        help="Crop streamlines to an X range.",
+        help="Crop to X range",
     )
     parser.add_argument(
         "--crop-y",
         nargs=2,
         type=float,
         metavar=("YMIN", "YMAX"),
-        help="Crop streamlines to a Y range.",
+        help="Crop to Y range",
     )
     parser.add_argument(
         "--crop-z",
         nargs=2,
         type=float,
         metavar=("ZMIN", "ZMAX"),
-        help="Crop streamlines to a Z range.",
+        help="Crop to Z range",
     )
     parser.add_argument(
         "--no-interactive",
         action="store_true",
-        help="Disable interactive rendering (useful for saving screenshots only).",
+        help="Disable interactive window, useful when only saving a screenshot",
     )
     parser.add_argument(
         "--screenshot",
         type=str,
         default=None,
-        help="Path to save a screenshot (PNG). If not set, no screenshot is saved.",
+        help="Path to save a PNG screenshot, no file is saved if omitted",
     )
-    parser.add_argument(
-        "--width", type=int, default=800, help="Width of the render window in pixels."
-    )
-    parser.add_argument(
-        "--height", type=int, default=800, help="Height of the render window in pixels."
-    )
+    parser.add_argument("--width", type=int, default=800, help="Window width in pixels")
+    parser.add_argument("--height", type=int, default=800, help="Window height in pixels")
     parser.add_argument(
         "--colormap",
         type=str,
         default="helix_angle",
-        help=(
-            "Colormap for coloring streamlines. "
-            "Use 'helix_angle' for the custom cardiac colormap "
-            "or any Matplotlib colormap name (e.g., viridis, hsv)."
-        ),
+        help="Colormap name. Use 'helix_angle' for cardiac HA or any Matplotlib colormap like viridis, hsv",
     )
 
     args = parser.parse_args()
 
-    # Determine colormap
+    # Resolve .trk
+    trk_path = _resolve_streamlines_path(args.input_path)
+
+    # List available color-by and exit if requested
+    available_dpp = _discover_trk_color_fields(trk_path)
+    available = ["elevation"] + available_dpp
+    if args.list_color_by:
+        print("Available color-by options:")
+        for k in available:
+            print(f"  - {k}")
+        return
+
+    # Determine color-by
+    color_by = args.color_by.strip().lower()
+    dpp_lower = {k.lower(): k for k in available_dpp}  # map lower to original key
+
+    if color_by == "auto":
+        if "ha" in dpp_lower:
+            color_by = "ha"
+        elif available_dpp:
+            # pick the first available stored field
+            color_by = list(dpp_lower.keys())[0]
+        else:
+            color_by = "elevation"
+        print(f"Auto color-by resolved to: {color_by}")
+
+    # Validate choice
+    if color_by != "elevation" and color_by not in dpp_lower:
+        print(f"Requested color-by '{args.color_by}' not found. Available: {', '.join(available)}")
+        sys.exit(2)
+
+    # Choose colormap
     if args.colormap.lower() == "helix_angle":
         chosen_cmap = helix_angle_cmap
     else:
         try:
             chosen_cmap = plt.get_cmap(args.colormap)
         except ValueError:
-            print(
-                f"⚠️ Unknown colormap '{args.colormap}', falling back to helix_angle_cmap."
-            )
+            print(f"Unknown colormap '{args.colormap}', falling back to helix_angle")
             chosen_cmap = helix_angle_cmap
 
-    # Resolve streamlines file depending on input type
-    if not args.input_path.exists():
-        print(f"❌ Input path not found: {args.input_path}")
-        sys.exit(1)
-
-    suffix = args.input_path.suffix.lower()
-
-    if suffix == ".conf":
-        # Read conf file and construct path to streamlines.npz
-        params = read_conf_file(args.input_path)
-        output_dir = Path(params.get("OUTPUT_PATH", "./output"))
-        streamlines_file = output_dir / "streamlines.npz"
-        if not streamlines_file.exists():
-            print(
-                f"❌ streamlines.npz not found at: {streamlines_file}\n"
-                f"(Derived from OUTPUT_PATH in {args.input_path})"
-            )
-            sys.exit(1)
-    elif suffix == ".npz" or suffix == ".trk":
-        # Direct .npz provided
-        streamlines_file = args.input_path
-    else:
-        print(
-            "❌ Unsupported input. Provide either a .conf file or a streamlines .npz file."
-        )
-        sys.exit(1)
-
-    # Compute crop bounds if provided
+    # Crop bounds
     crop_bounds = None
     if args.crop_x or args.crop_y or args.crop_z:
         crop_bounds = (
@@ -187,11 +200,11 @@ def script():
             tuple(args.crop_z or [-float("inf"), float("inf")]),
         )
 
-    # Call visualization
+    # Call the visualizer
+    # Always render as tubes as requested earlier
     visualize_streamlines(
-        streamlines_file=streamlines_file,
-        color_by=args.color_by,
-        mode=args.mode,
+        streamlines_file=trk_path,
+        color_by=(color_by if color_by == "elevation" else dpp_lower[color_by]),  # pass original key if stored
         line_width=args.line_width,
         subsample_factor=args.subsample,
         filter_min_len=args.min_length,

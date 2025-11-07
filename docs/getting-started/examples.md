@@ -146,7 +146,7 @@ Once the structure tensor and eigenvectors have been calculated on the whole vol
 
     !!! note
 
-        The streamlines are generated in ```output/streamlines.npz```
+        The streamlines are generated in ```output/streamlines.trk```
 
 
 2. Use the `cardio-visualize-streamlines` command to plot the streamlines:

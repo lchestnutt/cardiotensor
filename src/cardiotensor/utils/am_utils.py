@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional, Sequence, Union
+from typing import List, Optional, Sequence, Union, Mapping
 import numpy as np
 
 
@@ -9,11 +9,13 @@ def write_spatialgraph_am(
     out_path: str | Path,
     streamlines_xyz: List[np.ndarray],
     point_thickness: Optional[Sequence[np.ndarray] | np.ndarray] = None,
-    edge_scalar: Optional[Union[Sequence[float], np.ndarray]] = None,
-    edge_scalar_name: str = "EdgeHA",
+    edge_scalar: Optional[
+        Union[Sequence[float], np.ndarray, Mapping[str, Union[Sequence[float], np.ndarray]]]
+    ] = None,
+    edge_scalar_name: Optional[str] = None,
 ) -> None:
     """
-    Minimal Amira SpatialGraph writer with optional EDGE scalar at @6.
+    Minimal Amira SpatialGraph writer with optional EDGE scalar blocks.
 
     Writes blocks:
       @1 VERTEX float[3]
@@ -21,13 +23,31 @@ def write_spatialgraph_am(
       @3 EDGE   int          NumEdgePoints
       @4 POINT  float[3]     EdgePointCoordinates
       @5 POINT  float        thickness
-      @6 EDGE   float <name> optional per edge scalar
+      @6..     EDGE  float <name>   one or more per-edge scalars
 
-    streamlines_xyz is a list of polylines in (x, y, z)
-    point_thickness can be a flat array of length sum(N_i) or a list aligned to streamlines
-    edge_scalar is one value per edge
+    Parameters
+    ----------
+    out_path : str | Path
+        Output .am path.
+    streamlines_xyz : list[np.ndarray]
+        List of polylines (x, y, z). Each array shape = (Ni, 3), Ni >= 2.
+    point_thickness : np.ndarray | list[np.ndarray], optional
+        Per-point thickness. Either a flat array of length sum(Ni) or a list
+        aligned to streamlines with lengths Ni.
+    edge_scalar : array-like | dict[str, array-like], optional
+        - If a 1D array-like: one scalar per edge, use `edge_scalar_name`.
+        - If a dict: multiple scalars, each value must be 1D, length = n_edges.
+          Keys become field names.
+    edge_scalar_name : str, optional
+        Name for the single-scalar case. If `edge_scalar` is a dict, this is ignored.
+
+    Notes
+    -----
+    - Field names are lightly validated for Amira compatibility.
+    - Values are written as ASCII floats with 6 decimal places.
     """
     out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if len(streamlines_xyz) == 0:
         raise ValueError("No streamlines to write")
@@ -39,21 +59,21 @@ def write_spatialgraph_am(
 
     n_edges = len(streamlines_xyz)
 
-    # Vertices, start and end for each edge
+    # Build vertices: start and end of each edge
     vertices = np.vstack([np.vstack((sl[0][None, :], sl[-1][None, :])) for sl in streamlines_xyz])
     n_vertices = vertices.shape[0]
 
-    # Connectivity, zero based
+    # Connectivity (zero-based)
     edge_conn = np.column_stack((
         np.arange(0, 2 * n_edges, 2, dtype=int),
         np.arange(1, 2 * n_edges, 2, dtype=int),
     ))
 
-    # Concatenated points
+    # Concatenate all points
     points_concat = np.concatenate(streamlines_xyz, axis=0).astype(float)
     n_points_total = points_concat.shape[0]
 
-    # Thickness for @5
+    # Thickness block (@5)
     if point_thickness is None:
         thickness_concat = np.ones((n_points_total,), dtype=float)
     else:
@@ -61,13 +81,22 @@ def write_spatialgraph_am(
             point_thickness, num_points_per_edge, n_points_total, "point_thickness"
         )
 
-    # Optional per edge scalar for @6
+    # Edge scalar(s)
+    edge_scalar_blocks: list[tuple[str, np.ndarray]] = []
     if edge_scalar is not None:
-        edge_scalar_vals = _normalize_edge_attribute(edge_scalar, n_edges, "edge_scalar")
-        write_edge_block = True
-    else:
-        edge_scalar_vals = None
-        write_edge_block = False
+        if isinstance(edge_scalar, dict):
+            # multiple fields
+            for name, vals in edge_scalar.items():
+                field_name = _sanitize_field_name(name, param="edge_scalar (dict key)")
+                arr = _normalize_edge_attribute(vals, n_edges, f"edge_scalar['{field_name}']")
+                edge_scalar_blocks.append((field_name, arr))
+        else:
+            # single field
+            if not edge_scalar_name:
+                raise ValueError("edge_scalar_name must be provided for single edge_scalar array")
+            field_name = _sanitize_field_name(edge_scalar_name, param="edge_scalar_name")
+            arr = _normalize_edge_attribute(edge_scalar, n_edges, "edge_scalar")
+            edge_scalar_blocks.append((field_name, arr))
 
     # Header
     header = []
@@ -91,8 +120,12 @@ def write_spatialgraph_am(
     header.append("EDGE { int NumEdgePoints } @3")
     header.append("POINT { float[3] EdgePointCoordinates } @4")
     header.append("POINT { float thickness } @5")
-    if write_edge_block:
-        header.append(f"EDGE {{ float {edge_scalar_name} }} @6")
+
+    # Edge scalar headers start at @6
+    data_block_index = 6
+    for name, _ in edge_scalar_blocks:
+        header.append(f"EDGE {{ float {name} }} @{data_block_index}")
+        data_block_index += 1
     header.append("")
 
     # Data blocks
@@ -127,14 +160,31 @@ def write_spatialgraph_am(
     for t in thickness_concat:
         lines.append(f"{float(t):.6f}")
 
-    # @6 optional per edge scalar
-    if write_edge_block:
+    # subsequent @k edge scalar blocks
+    block_idx = 6
+    for _, arr in edge_scalar_blocks:
         lines.append("")
-        lines.append("@6")
-        for val in edge_scalar_vals:
+        lines.append(f"@{block_idx}")
+        for val in arr:
             lines.append(f"{float(val):.6f}")
+        block_idx += 1
 
     out_path.write_text("\n".join(header + lines), encoding="utf-8")
+
+
+def _sanitize_field_name(name: str, param: str) -> str:
+    """
+    Amira field names should be simple symbols without spaces or quotes.
+    This is a light sanitization that preserves common names like HA, IA, AZ, EL.
+    """
+    if not isinstance(name, str) or len(name.strip()) == 0:
+        raise ValueError(f"{param} must be a non-empty string")
+    name = name.strip()
+    # Replace spaces and forbidden chars
+    bad = set(' \t\r\n"\'{}[]()@')
+    if any(ch in bad for ch in name):
+        name = "".join(ch if ch not in bad else "_" for ch in name)
+    return name
 
 
 def _normalize_point_attribute(

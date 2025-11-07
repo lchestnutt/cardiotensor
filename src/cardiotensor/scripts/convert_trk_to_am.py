@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
 trk_to_am.py
-Convert a .trk or .npz streamlines file to an Amira SpatialGraph .am.
+Convert a .trk file to Amira SpatialGraph .am with multiple edge scalars.
 
-Options
-  --edge-scalar-source {none,ha,elevation} select EDGE scalar source
-  --edge-reduce {mean,median} aggregation across points
-  --edge-name name used in EDGE { float <name> } @6
+Examples
+  # default, export all available per-edge scalars, compute elevation if missing
+  trk_to_am.py heart.trk
+
+  # export only HA and IA
+  trk_to_am.py heart.trk --edge-scalar-sources ha,ia --edge-reduce median
 """
 
 import argparse
@@ -14,67 +16,108 @@ from pathlib import Path
 
 from cardiotensor.utils.am_utils import write_spatialgraph_am
 from cardiotensor.utils.streamlines_io_utils import (
-    load_trk_streamlines,
-    load_npz_streamlines,
-    ha_to_degrees_per_streamline,
-    compute_elevation_angles,
+    load_trk_streamlines,          # -> (streamlines_xyz, attrs_dict)
+    normalize_attrs_to_degrees,    # normalize HA/IA/AZ/EL if byte-scaled
+    compute_elevation_angles,      # derive EL from geometry if needed
     reduce_per_edge,
 )
 
+def parse_sources(s: str) -> list[str]:
+    return [t.strip().lower() for t in s.split(",") if t.strip()]
 
 def script():
     parser = argparse.ArgumentParser(
-        description="Convert .trk or .npz to Amira SpatialGraph .am",
+        description="Convert .trk to Amira SpatialGraph .am with multiple edge scalars",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("input", type=Path, help="Path to .trk or .npz")
-    parser.add_argument("-o", "--output", type=Path, default=None, help="Output .am path")
-    parser.add_argument("--edge-scalar-source", choices=["none", "ha", "elevation"], default="ha",
-                        help="Compute one scalar per edge from HA or elevation")
-    parser.add_argument("--edge-reduce", choices=["mean", "median"], default="mean",
-                        help="Reduction across points per edge")
-    parser.add_argument("--edge-name", type=str, default="EdgeHA",
-                        help="Name for EDGE { float <name> } @6")
+    parser.add_argument("input", type=Path, help="Path to .trk")
+    parser.add_argument("-o", "--output", type=Path, default=None,
+                        help="Output .am path. If writer does not support multiple scalars, one file per scalar will be written with suffixes.")
+    parser.add_argument(
+        "--edge-scalar-sources",
+        type=str,
+        default="all",
+        help=("Comma separated among {ha,ia,az,el,elevation} or 'all'. "
+              "Default 'all' exports all angle fields present in the TRK and also computes elevation if EL is absent."),
+    )
+    parser.add_argument(
+        "--edge-reduce",
+        choices=["mean", "median"],
+        default="mean",
+        help="Reduction across points per edge",
+    )
     args = parser.parse_args()
 
     inp = args.input
+    if inp.suffix.lower() != ".trk":
+        raise ValueError("Only .trk is supported.")
     if not inp.exists():
         raise FileNotFoundError(f"Input file not found: {inp}")
 
-    if inp.suffix.lower() == ".npz":
-        streamlines_xyz, ha_list = load_npz_streamlines(inp)
-    elif inp.suffix.lower() == ".trk":
-        streamlines_xyz, ha_list = load_trk_streamlines(inp)
+    # Load streamlines and per-point attributes
+    streamlines_xyz, attrs = load_trk_streamlines(inp)     # dict like {"HA":[...], "IA":[...], ...}
+    attrs_deg = normalize_attrs_to_degrees(attrs)          # cast to float32 degrees where needed
+
+    # Decide which to export
+    requested = parse_sources(args.edge_scalar_sources) or ["all"]
+
+    targets = set()
+    if "all" in requested:
+        targets.update(k for k in attrs_deg.keys() if k in {"HA", "IA", "AZ", "EL"})
+        if "EL" not in targets:
+            # compute elevation from geometry
+            attrs_deg["EL"] = compute_elevation_angles(streamlines_xyz)
+            targets.add("EL")
     else:
-        raise ValueError("Unsupported extension. Use .trk or .npz")
+        alias = {"elevation": "EL"}
+        for item in requested:
+            key = alias.get(item, item).upper()
+            if key == "EL":
+                if "EL" not in attrs_deg:
+                    attrs_deg["EL"] = compute_elevation_angles(streamlines_xyz)
+                targets.add("EL")
+            elif key in {"HA", "IA", "AZ"}:
+                if key not in attrs_deg:
+                    raise ValueError(
+                        f"Requested '{key}' is not present in TRK per-point data. "
+                        f"Available: {sorted(attrs_deg.keys())}"
+                    )
+                targets.add(key)
+            else:
+                raise ValueError("Sources must be among {ha, ia, az, el, elevation} or 'all'")
 
-    # Build EDGE scalar if requested
-    edge_vals = None
-    edge_name = args.edge_name
-    if args.edge_scalar_source == "ha":
-        if ha_list is None:
-            raise ValueError("No HA values available. For .trk save data_per_point['HA'], for .npz include ha_values")
-        per_point = ha_to_degrees_per_streamline(ha_list)
-        edge_vals = reduce_per_edge(per_point, args.edge_reduce)
-        if args.edge_name == "EdgeHA":
-            edge_name = "EdgeHA"
-    elif args.edge_scalar_source == "elevation":
-        elev_pp = compute_elevation_angles(streamlines_xyz)
-        edge_vals = reduce_per_edge(elev_pp, args.edge_reduce)
-        if args.edge_name == "EdgeHA":
-            edge_name = "Elevation"
+    if not targets:
+        raise ValueError("No edge scalars to export after filtering.")
 
-    out_path = args.output if args.output is not None else inp.with_suffix(".am")
+    # Reduce per-point to per-edge
+    edge_scalar_dict = {}
+    for key in sorted(targets):
+        edge_scalar_dict[key] = reduce_per_edge(attrs_deg[key], how=args.edge_reduce)
 
-    write_spatialgraph_am(
-        out_path=out_path,
-        streamlines_xyz=streamlines_xyz,
-        point_thickness=None,   # writes 1.0 per point
-        edge_scalar=edge_vals,  # None if source is none
-        edge_scalar_name=edge_name,
-    )
-    print(f"Wrote Amira SpatialGraph: {out_path}")
+    base_out = args.output if args.output is not None else inp.with_suffix(".am")
 
+    # Try multi field write if your writer supports dict, else fallback per field
+    try:
+        write_spatialgraph_am(
+            out_path=base_out,
+            streamlines_xyz=streamlines_xyz,
+            point_thickness=None,
+            edge_scalar=edge_scalar_dict,   # dict[str, np.ndarray]
+            edge_scalar_name=None,          # ignored when dict is provided
+        )
+        print(f"Wrote Amira SpatialGraph with fields {sorted(edge_scalar_dict.keys())}: {base_out}")
+    except TypeError:
+        print("Writer does not accept multiple edge scalars, writing one file per scalar...")
+        for key, vals in edge_scalar_dict.items():
+            out_path = base_out.with_name(f"{base_out.stem}_{key}{base_out.suffix}")
+            write_spatialgraph_am(
+                out_path=out_path,
+                streamlines_xyz=streamlines_xyz,
+                point_thickness=None,
+                edge_scalar=vals,
+                edge_scalar_name=key,
+            )
+            print(f"  -> {out_path}")
 
 if __name__ == "__main__":
-    main()
+    script()

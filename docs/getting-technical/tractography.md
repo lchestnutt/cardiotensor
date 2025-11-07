@@ -53,7 +53,7 @@ Streamlines shorter than `min_length_pts` (default: 10 points) are discarded. Yo
 
 ## Output
 
-The streamline results are saved in `.npz` format as:
+The streamline results are saved in `.trk` format as:
 
 * `streamlines`: a list of arrays, each of shape (N, 3), where N is the number of points in that streamline
 * `ha_values`: sampled HA (helix angle) values along each point
