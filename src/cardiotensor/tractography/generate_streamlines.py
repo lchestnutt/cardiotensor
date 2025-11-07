@@ -2,7 +2,7 @@ import math
 from pathlib import Path
 import numpy as np
 from alive_progress import alive_bar
-from typing import List, Optional, Tuple, Sequence, Union
+from typing import Dict, List, Tuple, Optional
 
 import nibabel as nib
 from dipy.io.stateful_tractogram import StatefulTractogram, Space, Origin
@@ -255,15 +255,157 @@ def save_trk_dipy_from_vox_zyx(
     out_path: str | Path,
     vol_shape_zyx: tuple[int, int, int],
     voxel_sizes_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
-    data_per_point: list[dict[str, np.ndarray]] | None = None,
+    data_values: Optional[List[np.ndarray]] = None,
+    data_name: Optional[str] = None,
 ):
     """
-    Save streamlines given in voxel indices (z, y, x) as a TrackVis .trk using DIPY.
+    Save streamlines given in voxel indices (z,y,x) as TrackVis .trk using DIPY.
+    Optionally attach one per-point scalar list under `data_name`.
     """
     Z, Y, X = vol_shape_zyx
     vz, vy, vx = voxel_sizes_zyx
 
-    # reference affine, voxel index -> RAS mm, axes x,y,z
+    affine = np.array([[vx, 0, 0, 0],
+                       [0, vy, 0, 0],
+                       [0, 0, vz, 0],
+                       [0, 0, 0, 1]], dtype=np.float32)
+
+    # DIPY expects NIfTI with shape (X, Y, Z)
+    ref_img = nib.Nifti1Image(np.zeros((X, Y, Z), dtype=np.uint8), affine)
+    
+    # reorder each streamline from (z,y,x) to (x,y,z)
+    sl_xyz_vox = [np.stack([np.asarray(sl)[:, 2], np.asarray(sl)[:, 1], np.asarray(sl)[:, 0]], axis=1).astype(np.float32)
+                  for sl in streamlines_zyx]
+
+    sft = StatefulTractogram(sl_xyz_vox, ref_img, Space.VOX, origin=Origin.TRACKVIS)
+
+    if data_values is not None and data_name:
+        if len(data_values) != len(sl_xyz_vox):
+            raise ValueError("data_values length must equal number of streamlines")
+        from nibabel.streamlines.array_sequence import ArraySequence
+        sft.data_per_point = {
+            data_name: ArraySequence([np.asarray(v, dtype=np.float32).reshape(-1, 1) for v in data_values])
+        }
+
+    save_trk(sft, str(out_path), bbox_valid_check=False)
+
+
+
+# ---------- tracing ----------
+
+def trace_streamline(
+    start_pt: tuple[float, float, float],
+    vector_field: np.ndarray,
+    fa_volume: np.ndarray | None = None,
+    fa_threshold: float = 0.1,
+    step_length: float = 0.5,
+    max_steps: int | None = 1000,
+    angle_threshold: float = 60.0,
+    eps: float = 1e-10,
+    direction: int = 1,
+) -> list[tuple[float, float, float]]:
+    Z, Y, X = vector_field.shape[1:]
+    coords: list[tuple[float, float, float]] = [(float(start_pt[0]), float(start_pt[1]), float(start_pt[2]))]
+    current_pt = np.array(start_pt, dtype=np.float64)
+    prev_dir: np.ndarray | None = None
+
+    def interp_unit(pt: np.ndarray) -> np.ndarray | None:
+        vec = trilinear_interpolate_vector(vector_field, (pt[0], pt[1], pt[2]))
+        if np.isnan(vec).any():
+            return None
+        n = np.linalg.norm(vec)
+        if n < eps:
+            return None
+        return np.array([vec[2], vec[1], vec[0]]) / n * direction  # to (z,y,x)
+
+    step_count = 0
+    while max_steps is None or step_count < max_steps:
+        step_count += 1
+
+        if fa_volume is not None:
+            if trilinear_interpolate_scalar(fa_volume, tuple(current_pt)) < fa_threshold:
+                break
+
+        k1 = interp_unit(current_pt)
+        if k1 is None:
+            break
+        if prev_dir is not None:
+            ang = np.degrees(np.arccos(np.clip(np.dot(prev_dir, k1), -1.0, 1.0)))
+            if ang > angle_threshold:
+                break
+
+        mid1 = current_pt + 0.5 * step_length * k1; k2 = interp_unit(mid1)
+        if k2 is None:
+            break
+        mid2 = current_pt + 0.5 * step_length * k2; k3 = interp_unit(mid2)
+        if k3 is None:
+            break
+        end_pt = current_pt + step_length * k3; k4 = interp_unit(end_pt)
+        if k4 is None:
+            break
+
+        ang4 = np.degrees(np.arccos(np.clip(np.dot(k1, k4), -1.0, 1.0)))
+        if ang4 > angle_threshold:
+            break
+
+        next_pt = current_pt + (step_length / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+        zn, yn, xn = next_pt
+        if not (0 <= zn < Z and 0 <= yn < Y and 0 <= xn < X):
+            break
+
+        coords.append((float(zn), float(yn), float(xn)))
+        current_pt = next_pt
+        prev_dir = k1
+
+    return coords
+
+
+def generate_streamlines_from_vector_field(
+    vector_field: np.ndarray,
+    seed_points: np.ndarray,
+    fa_volume: np.ndarray | None = None,
+    fa_threshold: float = 0.1,
+    step_length: float = 0.5,
+    max_steps: int | None = None,
+    angle_threshold: float = 60.0,
+    min_length_pts: int = 10,
+    bidirectional: bool = True,
+) -> list[list[tuple[float, float, float]]]:
+    all_streamlines: list[list[tuple[float, float, float]]] = []
+    with alive_bar(len(seed_points), title="Tracing Streamlines") as bar:
+        for zi, yi, xi in seed_points:
+            start = (float(zi), float(yi), float(xi))
+            forward_pts = trace_streamline(start, vector_field, fa_volume, fa_threshold, step_length, max_steps, angle_threshold, direction=1)
+            if bidirectional:
+                backward_pts = trace_streamline(start, vector_field, fa_volume, fa_threshold, step_length, max_steps, angle_threshold, direction=-1)
+                backward_pts = backward_pts[::-1][:-1] if len(backward_pts) > 1 else []
+                full = backward_pts + forward_pts
+            else:
+                full = forward_pts
+            if len(full) >= min_length_pts:
+                all_streamlines.append(full)
+            bar()
+    return all_streamlines
+
+
+# ---------- TRK writer, generalized data name ----------
+
+def save_trk_dipy_from_vox_zyx_multi(
+    streamlines_zyx: List[List[Tuple[float, float, float]]],
+    out_path: str | Path,
+    vol_shape_zyx: Tuple[int, int, int],
+    voxel_sizes_zyx: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+    data_per_point: Optional[Dict[str, List[np.ndarray]]] = None,
+) -> None:
+    """
+    Save streamlines in voxel indices (z,y,x) as TrackVis .trk using DIPY.
+    Accepts multiple per-point scalar lists via `data_per_point` dict,
+    with keys like "HA", "IA", "AZ", "EL". Each list must align with streamlines.
+    """
+    Z, Y, X = vol_shape_zyx
+    vz, vy, vx = voxel_sizes_zyx
+
+    # Voxel-index -> RAS mm affine (X,Y,Z order for NIfTI reference)
     affine = np.array([
         [vx, 0,  0,  0],
         [0,  vy, 0,  0],
@@ -271,43 +413,43 @@ def save_trk_dipy_from_vox_zyx(
         [0,  0,  0,  1],
     ], dtype=np.float32)
 
-    # DIPY expects NIfTI with shape (X, Y, Z)
+    # NIfTI reference has data shape (X, Y, Z)
     ref_img = nib.Nifti1Image(np.zeros((X, Y, Z), dtype=np.uint8), affine)
 
-    # reorder each streamline from (z,y,x) to (x,y,z)
-    sl_xyz_vox = [np.stack([np.asarray(sl)[:, 2],
-                             np.asarray(sl)[:, 1],
-                             np.asarray(sl)[:, 0]], axis=1).astype(np.float32)
-                  for sl in streamlines_zyx]
+    # Convert each streamline from (z,y,x) to (x,y,z)
+    sl_xyz_vox = [
+        np.stack([np.asarray(sl)[:, 2],
+                  np.asarray(sl)[:, 1],
+                  np.asarray(sl)[:, 0]], axis=1).astype(np.float32)
+        for sl in streamlines_zyx
+    ]
 
-    sft = StatefulTractogram(
-        sl_xyz_vox,
-        ref_img,
-        Space.VOX,
-        origin=Origin.TRACKVIS,
-    )
+    sft = StatefulTractogram(sl_xyz_vox, ref_img, Space.VOX, origin=Origin.TRACKVIS)
 
-    if data_per_point is not None:
-        if len(data_per_point) != len(sl_xyz_vox):
-            raise ValueError("data_per_point length must equal number of streamlines")
-        
+    if data_per_point:
+        n = len(sl_xyz_vox)
         from nibabel.streamlines.array_sequence import ArraySequence
-        sft.data_per_point = {
-            "HA": ArraySequence([np.asarray(ha, dtype=np.float32).reshape(-1, 1)
-                                for ha in data_per_point])
-        }
+        sft.data_per_point = {}
+        for name, lists in data_per_point.items():
+            if len(lists) != n:
+                raise ValueError(
+                    f"data_per_point['{name}'] length {len(lists)} != number of streamlines {n}"
+                )
+            sft.data_per_point[name] = ArraySequence(
+                [np.asarray(v, dtype=np.float32).reshape(-1, 1) for v in lists]
+            )
 
-
+    from dipy.io.streamline import save_trk
     save_trk(sft, str(out_path), bbox_valid_check=False)
 
 
+# ---------- top-level generator, angle-agnostic ----------
 
-   
 def generate_streamlines_from_params(
     vector_field_dir: str | Path,
     output_dir: str | Path,
     fa_dir: str | Path,
-    ha_dir: str | Path,
+    angle_dir: str | Path,                      # single angle folder or parent of HA IA AZ EL
     mask_path: str | Path | None = None,
     start_xyz: tuple[int, int, int] = (0, 0, 0),
     end_xyz: tuple[int | None, int | None, int | None] = (None, None, None),
@@ -320,64 +462,58 @@ def generate_streamlines_from_params(
     angle_threshold: float = 60.0,
     min_length_pts: int = 10,
     bidirectional: bool = True,
-    voxel_sizes_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0), 
-    save_trk_file: bool = True,                                    
+    voxel_sizes_zyx: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    save_trk_file: bool = True,
 ) -> None:
-
     """
-    Generate streamlines from a vector field and save to NPZ.
+    Generate streamlines from the eigenvector field, then export:
+      - .trk with all discovered per-point angle fields
+      - .am with all per-edge mean angle scalars
 
-    Parameters
-    ----------
-    vector_field_dir : str or Path
-        Directory containing eigenvector volumes.
-    output_dir : str or Path
-        Directory where output NPZ will be saved.
-    fa_dir : str or Path
-        Directory containing FA volumes.
-    ha_dir : str or Path
-        Directory containing HA volumes.
-    mask_path : str or Path, optional
-        Path to mask volume to filter vectors.
-    start_xyz, end_xyz : tuple[int]
-        Cropping bounds in Z, Y, X (None = full dimension).
-    bin_factor : int
-        Spatial downsampling factor.
-    num_seeds : int
-        Number of random seed points for streamline generation.
-    fa_threshold : float
-        Minimum FA value to continue tracing.
-    step_length : float
-        Streamline step length in voxels.
-    max_steps : int, optional
-        Maximum number of steps per streamline.
-    angle_threshold : float
-        Maximum angle (degrees) allowed between steps.
-    min_length_pts : int
-        Minimum number of points for a valid streamline.
-    bidirectional : bool
-        Trace in both directions from each seed.
+    Angle discovery:
+      If `angle_dir` is one of HA, IA, AZ, EL, discover siblings with those names and include all that exist.
+      If `angle_dir` is a parent, include all subfolders named HA, IA, AZ, EL that exist.
+      If none are found, treat `angle_dir` as a single custom angle and include it.
     """
     vector_field_dir = Path(vector_field_dir)
     fa_dir = Path(fa_dir)
-    ha_dir = Path(ha_dir)
+    angle_dir = Path(angle_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Discover all angle folders
+    KNOWN = ("HA", "IA", "AZ", "EL")
+    discovered: dict[str, Path] = {}
+
+    if angle_dir.name.upper() in KNOWN:
+        parent = angle_dir.parent
+        for name in KNOWN:
+            p = parent / name
+            if p.exists():
+                discovered[name] = p
+    else:
+        for name in KNOWN:
+            p = angle_dir / name
+            if p.exists():
+                discovered[name] = p
+
+    if not discovered:
+        lbl = angle_dir.name.upper()
+        discovered[lbl] = angle_dir
+        print(f"Warning: no standard angle subfolders found, using single angle '{lbl}'")
+
+    print(f"Angles selected: {sorted(discovered.keys())}")
+
+    # ROI and shape
     start_z, start_y, start_x = start_xyz
     end_z, end_y, end_x = end_xyz
+    vec_probe = DataReader(vector_field_dir)
+    full_shape = vec_probe.shape  # (3, Z, Y, X)
+    end_z = full_shape[1] if end_z is None else end_z
+    end_y = full_shape[2] if end_y is None else end_y
+    end_x = full_shape[3] if end_x is None else end_x
 
-    # --- Load vector field for shape ---
-    vec_reader = DataReader(vector_field_dir)
-    full_shape = vec_reader.shape  # (3, Z, Y, X)
-    if end_z is None:
-        end_z = full_shape[1]
-    if end_y is None:
-        end_y = full_shape[2]
-    if end_x is None:
-        end_x = full_shape[3]
-
-    # --- Handle binning ---
+    # Binning
     if bin_factor > 1:
         downsample_vector_volume(vector_field_dir, bin_factor, output_dir)
         vec_load_dir = output_dir / f"bin{bin_factor}" / vector_field_dir.name
@@ -385,80 +521,67 @@ def generate_streamlines_from_params(
         downsample_volume(fa_dir, bin_factor, output_dir, subfolder="FA", out_ext="tif")
         fa_load_dir = output_dir / f"bin{bin_factor}" / "FA"
 
-        downsample_volume(ha_dir, bin_factor, output_dir, subfolder="HA", out_ext="tif")
-        ha_load_dir = output_dir / f"bin{bin_factor}" / "HA"
+        angle_load_dirs: dict[str, Path] = {}
+        for name, p in discovered.items():
+            downsample_volume(p, bin_factor, output_dir, subfolder=name, out_ext="tif")
+            angle_load_dirs[name] = output_dir / f"bin{bin_factor}" / name
 
-        start_z_binned = start_z // bin_factor
-        end_z_binned = math.ceil(end_z / bin_factor)
-        start_y_binned = start_y // bin_factor
-        end_y_binned = math.ceil(end_y / bin_factor)
-        start_x_binned = start_x // bin_factor
-        end_x_binned = math.ceil(end_x / bin_factor)
+        start_z_b = start_z // bin_factor; end_z_b = math.ceil(end_z / bin_factor)
+        start_y_b = start_y // bin_factor; end_y_b = math.ceil(end_y / bin_factor)
+        start_x_b = start_x // bin_factor; end_x_b = math.ceil(end_x / bin_factor)
     else:
         vec_load_dir = vector_field_dir
         fa_load_dir = fa_dir
-        ha_load_dir = ha_dir
-        start_z_binned, end_z_binned = start_z, end_z
-        start_y_binned, end_y_binned = start_y, end_y
-        start_x_binned, end_x_binned = start_x, end_x
+        angle_load_dirs = {name: p for name, p in discovered.items()}
+        start_z_b, end_z_b = start_z, end_z
+        start_y_b, end_y_b = start_y, end_y
+        start_x_b, end_x_b = start_x, end_x
 
-    # --- Load vector field ---
-    print("📥 Loading vector field...")
+    # Load vector field
+    print("Loading vector field")
     vec_reader = DataReader(vec_load_dir)
     vector_field = vec_reader.load_volume(
-        start_index=start_z_binned, end_index=end_z_binned
-    )[:, :, start_y_binned:end_y_binned, start_x_binned:end_x_binned]
-
-    # Ensure channel order (3, Z, Y, X)
+        start_index=start_z_b, end_index=end_z_b
+    )[:, :, start_y_b:end_y_b, start_x_b:end_x_b]
     if vector_field.ndim == 4 and vector_field.shape[-1] == 3:
-        print("Reordering vector field axes for consistency...")
+        print("Reordering vector field axes")
         vector_field = np.moveaxis(vector_field, -1, 0)
 
-    # Flip vectors for consistency
-    print("Ensuring consistent vector orientations...")
+    # Consistent sign
     neg_mask = vector_field[0] < 0
     vector_field[:, neg_mask] *= -1
 
-    # --- Mask if provided ---
+    # Mask
     if mask_path:
-        print("Loading mask volume...")
+        print("Loading mask")
         mask_reader = DataReader(mask_path)
         mask = mask_reader.load_volume(
-            start_index=start_z_binned,
-            end_index=end_z_binned,
-            unbinned_shape=vec_reader.shape[1:],  # (Z, Y, X)
+            start_index=start_z_b, end_index=end_z_b, unbinned_shape=vec_reader.shape[1:]
         )
-        print("Cropping mask volume...")
-        mask = mask[:, start_y_binned:end_y_binned, start_x_binned:end_x_binned]
+        mask = mask[:, start_y_b:end_y_b, start_x_b:end_x_b]
         mask = (mask > 0).astype(np.uint8)
-
-        print("Applying mask to vector field...")
         vector_field[:, mask == 0] = np.nan
 
-    # --- Load FA and create seed points ---
-    print("📥 Loading FA volume...")
+    # FA
+    print("Loading FA")
     fa_volume = DataReader(fa_load_dir).load_volume(
-        start_index=start_z_binned, end_index=end_z_binned
+        start_index=start_z_b, end_index=end_z_b
     )
-    fa_volume = fa_volume[:, start_y_binned:end_y_binned, start_x_binned:end_x_binned]
+    fa_volume = fa_volume[:, start_y_b:end_y_b, start_x_b:end_x_b]
 
-    print("Selecting seed points...")
+    # Seeds
+    print("Selecting seeds")
     seed_mask = fa_volume > (fa_seed_min * 255)
     valid_indices = np.argwhere(seed_mask)
-    if len(valid_indices) < num_seeds:
-        print(
-            "⚠️ Not enough valid seed points; using all available voxels above threshold."
-        )
-        chosen_indices = valid_indices
-    else:
-        chosen_indices = valid_indices[
-            np.random.choice(valid_indices.shape[0], num_seeds, replace=False)
-        ]
+    if valid_indices.size == 0:
+        raise RuntimeError("No voxels above FA seed threshold")
+    chosen = valid_indices if len(valid_indices) <= num_seeds else \
+        valid_indices[np.random.choice(valid_indices.shape[0], num_seeds, replace=False)]
 
-    # --- Generate streamlines ---
+    # Streamlines
     streamlines = generate_streamlines_from_vector_field(
         vector_field=vector_field,
-        seed_points=chosen_indices,
+        seed_points=chosen,
         fa_volume=fa_volume,
         fa_threshold=fa_threshold,
         step_length=step_length,
@@ -467,80 +590,57 @@ def generate_streamlines_from_params(
         min_length_pts=min_length_pts,
         bidirectional=bidirectional,
     )
-    # --- Load HA for sampling ---
-    print("Loading HA volume for sampling...")
-    ha_volume = DataReader(ha_load_dir).load_volume(
-        start_index=start_z_binned, end_index=end_z_binned
-    )
-    ha_volume = ha_volume[:, start_y_binned:end_y_binned, start_x_binned:end_x_binned]
 
-    def sample_ha_along(streamline: list[tuple[float, float, float]]) -> np.ndarray:
-        """Per-vertex HA sampling (trilinear) matching the streamline length."""
+    # Sample all discovered angles per point
+    print("Sampling angles along streamlines")
+    def load_crop(vol_dir: Path) -> np.ndarray:
+        v = DataReader(vol_dir).load_volume(start_index=start_z_b, end_index=end_z_b)
+        return v[:, start_y_b:end_y_b, start_x_b:end_x_b]
+
+    cropped_angles = {name: load_crop(path) for name, path in angle_load_dirs.items()}
+
+    def sample_along(volume: np.ndarray, sl: list[tuple[float, float, float]]) -> np.ndarray:
+        Zc, Yc, Xc = volume.shape
         vals = []
-        Z, Y, X = ha_volume.shape
-        for z, y, x in streamline:
-            # clamp to bounds then trilinear interpolate at fractional coords
-            zc = min(max(z, 0.0), Z - 1.0)
-            yc = min(max(y, 0.0), Y - 1.0)
-            xc = min(max(x, 0.0), X - 1.0)
-            vals.append(trilinear_interpolate_scalar(ha_volume, (zc, yc, xc)))
+        for z, y, x in sl:
+            zc = min(max(z, 0.0), Zc - 1.0)
+            yc = min(max(y, 0.0), Yc - 1.0)
+            xc = min(max(x, 0.0), Xc - 1.0)
+            vals.append(trilinear_interpolate_scalar(volume, (zc, yc, xc)))
         return np.asarray(vals, dtype=np.float32)
 
-    # --- HA values per streamline (list-aligned) ---
-    ha_values_per_streamline = [sample_ha_along(sl) for sl in streamlines]
+    per_point_angles = {name: [sample_along(vol, sl) for sl in streamlines]
+                        for name, vol in cropped_angles.items()}
 
-    # --- If binned, rescale coordinates back to full-res ---
+    # Unbin coordinates if needed
     if bin_factor > 1:
-        streamlines = [
-            [(z * bin_factor, y * bin_factor, x * bin_factor) for (z, y, x) in sl]
-            for sl in streamlines
-        ]
+        streamlines = [[(z * bin_factor, y * bin_factor, x * bin_factor) for (z, y, x) in sl]
+                       for sl in streamlines]
 
-    # --- Save NPZ ---
-    out_npz = output_dir / "streamlines.npz"   # fixed typo
-    np.savez_compressed(
-        out_npz,
-        streamlines=np.array(streamlines, dtype=object),
-        ha_values=np.array(ha_values_per_streamline, dtype=object),
-    )
-    print(f"Saved {len(streamlines)} streamlines and HA to {out_npz}")
-
-    # --- Save TRK with DIPY ---
+    # TRK with all per-point fields
     if save_trk_file:
-        # current cropped volume shape in Z,Y,X after slicing
-        Zc = end_z_binned - start_z_binned
-        Yc = end_y_binned - start_y_binned
-        Xc = end_x_binned - start_x_binned
-
-        # if you rescaled coordinates back to full res when bin_factor>1, voxel sizes stay the same
-        # if you did not rescale, you could multiply voxel_sizes by bin_factor instead
-
+        Zc = end_z_b - start_z_b; Yc = end_y_b - start_y_b; Xc = end_x_b - start_x_b
         out_trk = output_dir / "streamlines.trk"
-
-        save_trk_dipy_from_vox_zyx(
+        save_trk_dipy_from_vox_zyx_multi(
             streamlines_zyx=streamlines,
             out_path=out_trk,
             vol_shape_zyx=(Zc, Yc, Xc),
             voxel_sizes_zyx=voxel_sizes_zyx,
-            data_per_point=ha_values_per_streamline,
+            data_per_point=per_point_angles,
         )
+        print(f"Saved TRK with fields {sorted(per_point_angles.keys())} to {out_trk}")
 
-        print(f"Saved TRK to {out_trk}")
-
-
-
-    # --- Save Amira SpatialGraph (.am) ---
-    # After you build `streamlines` in (z,y,x), convert to (x,y,z)
-    streamlines_xyz = [np.stack([sl[:,2], sl[:,1], sl[:,0]], axis=1) for sl in map(np.asarray, streamlines)]
-    # Optional thickness, for example map HA to a radius
-    thickness = None  # or [np.full(len(sl), 1.0, float) for sl in streamlines_xyz]
-
-    edge_HA = np.array([float(np.nanmean(vals)) for vals in ha_values_per_streamline], dtype=float)
-
+    # Amira SpatialGraph with per-edge means for every angle
+    streamlines_xyz = [np.stack([sl[:, 2], sl[:, 1], sl[:, 0]], axis=1) for sl in map(np.asarray, streamlines)]
+    edge_scalar_dict = {
+        name: np.array([float(np.nanmean(vals)) for vals in lists], dtype=float)
+        for name, lists in per_point_angles.items()
+    }
     write_spatialgraph_am(
         out_path=output_dir / "streamlines_spatialgraph.am",
         streamlines_xyz=streamlines_xyz,
-        point_thickness=None,         # writes 1.0 everywhere
-        edge_scalar=edge_HA,          # one value per streamline
-        edge_scalar_name="HA"     # appears as EDGE { float HA } @6
+        point_thickness=None,
+        edge_scalar=edge_scalar_dict,   # multiple EDGE fields
+        edge_scalar_name=None,
     )
+    print(f"Wrote Amira SpatialGraph with fields {sorted(edge_scalar_dict.keys())} to {output_dir / 'streamlines_spatialgraph.am'}")
