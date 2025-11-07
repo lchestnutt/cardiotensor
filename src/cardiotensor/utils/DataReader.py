@@ -293,12 +293,6 @@ class DataReader:
     def _custom_image_reader(self, file_path: Path) -> np.ndarray:
         """
         Reads an image from the given file path into a NumPy array.
-
-        Args:
-            file_path (Path): Path to the image file.
-
-        Returns:
-            np.ndarray
         """
         suffix = file_path.suffix.lower()
 
@@ -306,23 +300,28 @@ class DataReader:
         if suffix == ".npy":
             return np.load(file_path, mmap_mode="r")
 
-        # 2) TIFF → use tifffile (OpenCV often fails on SampleFormat/BigTIFF)
+        # 2) TIFF → prefer tifffile, but gracefully fall back to OpenCV if codecs missing
         if suffix in {".tif", ".tiff"}:
             try:
-                # imread handles most TIFF flavors; memmap if you want zero-copy:
-                # arr = tiff.memmap(file_path)  # if you prefer memmap
-                arr = tiff.imread(file_path)
-                # Optional: normalize binary masks to uint8 if values are 0/1
-                if arr.dtype.kind in ("i", "u") and arr.max() <= 1:
-                    arr = arr.astype(np.uint8)
-                return arr
+                # Best path: uses tifffile (and imagecodecs when available)
+                return tiff.imread(file_path)
             except Exception as e:
+                # Fallback path: try OpenCV (handles many baseline TIFFs, including your tests)
+                img = cv2.imread(str(file_path), -1)
+                if img is not None:
+                    # Optional: warn once so users know performance/features may be reduced
+                    print(f"⚠ Falling back to OpenCV for TIFF '{file_path}' "
+                        f"(tifffile error: {e})")
+                    return img
+                # If even OpenCV fails, raise a helpful error
                 raise RuntimeError(
-                    f"Failed to read TIFF '{file_path}' with tifffile: {e}"
+                    "Failed to read TIFF with tifffile and OpenCV. "
+                    "If the file uses LZW/other codecs, install 'imagecodecs' "
+                    "to enable decoding."
                 ) from e
 
         # 3) Other formats → OpenCV (allow any depth/color)
-        img = cv2.imread(str(file_path), cv2.IMREAD_ANYDEPTH | cv2.IMREAD_ANYCOLOR)
+        img = cv2.imread(str(file_path), -1)
         if img is None:
             raise RuntimeError(
                 f"cv2.imread failed for '{file_path}'. "
