@@ -70,6 +70,7 @@ git = [
 
 [project.scripts]
 cardio-analysis = "cardiotensor.scripts.gui_analysis_tool:script"
+cardio-analysis-histo = "cardiotensor.scripts.analysis_histograms:script"
 cardio-generate-streamlines = "cardiotensor.scripts.generate_streamlines:script"
 cardio-analysis-streamlines = "cardiotensor.scripts.analysis_streamlines:script"
 cardio-tensor = "cardiotensor.scripts.compute_orientation:script"
