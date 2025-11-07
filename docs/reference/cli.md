@@ -38,7 +38,7 @@ Visualize results in 3D using vector fields and streamlines.
   Render vector fields using Fury. Optionally export to ParaView (VTK format).
 
 - `cardio-generate-streamlines`
-  Generate streamlines from the vector field. Outputs `.npz` files compatible with Amira.
+  Generate streamlines from the vector field. Outputs `.trk` files compatible with Amira.
 
 - `cardio-visualize-streamlines`
   Visualize streamlines in 3D using Fury. Can also export to ParaView.
