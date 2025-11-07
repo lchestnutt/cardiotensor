@@ -35,19 +35,27 @@ def script() -> None:
     parser.add_argument("--end-x", type=int, default=None, help="End slice index in X")
     parser.add_argument("--bin", type=int, default=1, help="Downsampling factor")
     parser.add_argument("--seeds", type=int, default=20000, help="Number of seeds")
-    parser.add_argument("--fa-seed-min", type=float, default=0.2, help="Min FA for seeding")
+    parser.add_argument(
+        "--fa-seed-min", type=float, default=0.2, help="Min FA for seeding"
+    )
     parser.add_argument("--fa-threshold", type=float, default=0.1, help="FA threshold")
     parser.add_argument("--step", type=float, default=0.5, help="Step length in voxels")
-    parser.add_argument("--max-steps", type=int, default=None, help="Max steps per streamline")
-    parser.add_argument("--angle", type=float, default=60.0, help="Max turning angle in degrees")
-    parser.add_argument("--min-len", type=int, default=10, help="Minimum streamline length in points")
+    parser.add_argument(
+        "--max-steps", type=int, default=None, help="Max steps per streamline"
+    )
+    parser.add_argument(
+        "--angle", type=float, default=60.0, help="Max turning angle in degrees"
+    )
+    parser.add_argument(
+        "--min-len", type=int, default=10, help="Minimum streamline length in points"
+    )
 
     # Base angle folder selection for discovery
     parser.add_argument(
         "--angle-mode",
         choices=["ha_ia", "az_el"],
         help="Select the base angle folder used for discovery. "
-             "ha_ia chooses HA/, az_el chooses AZ/. All siblings (HA IA AZ EL) found next to it are included.",
+        "ha_ia chooses HA/, az_el chooses AZ/. All siblings (HA IA AZ EL) found next to it are included.",
     )
 
     args = parser.parse_args()
@@ -79,7 +87,7 @@ def script() -> None:
         vector_field_dir=vector_field_dir,
         output_dir=output_dir,
         fa_dir=fa_dir,
-        angle_dir=angle_dir,   # base folder, siblings discovered automatically
+        angle_dir=angle_dir,  # base folder, siblings discovered automatically
         mask_path=mask_path,
         start_xyz=(args.start_z, args.start_y, args.start_x),
         end_xyz=(args.end_z, args.end_y, args.end_x),
@@ -93,7 +101,9 @@ def script() -> None:
         min_length_pts=args.min_len,
     )
 
-    print(f"Done. Base angle folder used for discovery: {angle_folder}/ under {output_dir}")
+    print(
+        f"Done. Base angle folder used for discovery: {angle_folder}/ under {output_dir}"
+    )
 
 
 if __name__ == "__main__":

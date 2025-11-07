@@ -14,46 +14,50 @@ Features:
 """
 
 from __future__ import annotations
+
 import argparse
 from pathlib import Path
-from typing import List, Optional, Dict, Tuple, Union
+from typing import Union
 
-import numpy as np
-import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-from cardiotensor.utils.streamlines_io_utils import load_trk_streamlines
+import numpy as np
 
 try:
     from tqdm import tqdm
 except Exception:
+
     def tqdm(it, **kwargs):  # fallback
         return it
 
-mpl.rcParams.update({
-    "savefig.dpi": 300,
-    "savefig.transparent": True,
-    "pdf.fonttype": 42,
-    "ps.fonttype": 42,
-    "figure.dpi": 120,
-    "font.size": 14,
-    "axes.labelsize": 14,
-    "legend.fontsize": 14,
-    "xtick.labelsize": 13,
-    "ytick.labelsize": 13,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.linewidth": 1,
-    "xtick.direction": "out",
-    "ytick.direction": "out",
-    "xtick.minor.visible": True,
-    "ytick.minor.visible": True,
-    "legend.frameon": False,
-})
+
+mpl.rcParams.update(
+    {
+        "savefig.dpi": 300,
+        "savefig.transparent": True,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "figure.dpi": 120,
+        "font.size": 14,
+        "axes.labelsize": 14,
+        "legend.fontsize": 14,
+        "xtick.labelsize": 13,
+        "ytick.labelsize": 13,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.linewidth": 1,
+        "xtick.direction": "out",
+        "ytick.direction": "out",
+        "xtick.minor.visible": True,
+        "ytick.minor.visible": True,
+        "legend.frameon": False,
+    }
+)
 
 # ---------- helpers ----------
 
-def load_streamlines(path: Path, key: Optional[str] = None) -> List[np.ndarray]:
+
+def load_streamlines(path: Path, key: str | None = None) -> list[np.ndarray]:
     """
     Load streamlines from .trk or .npz/.npy object arrays.
     Always returns list of streamlines in (x,y,z) coordinates.
@@ -62,6 +66,7 @@ def load_streamlines(path: Path, key: Optional[str] = None) -> List[np.ndarray]:
 
     if suffix == ".trk":
         from cardiotensor.utils.streamlines_io_utils import load_trk_streamlines
+
         streamlines_xyz, attrs = load_trk_streamlines(path)
         return [np.asarray(sl, dtype=np.float32) for sl in streamlines_xyz]
 
@@ -84,8 +89,8 @@ def load_streamlines(path: Path, key: Optional[str] = None) -> List[np.ndarray]:
     return [sl for sl in streamlines if sl.ndim == 2 and sl.shape[1] == 3]
 
 
+VoxelSize = Union[float, tuple[float, float, float]]
 
-VoxelSize = Union[float, Tuple[float, float, float]]
 
 def _scale_phys(P: np.ndarray, voxel_size: VoxelSize) -> np.ndarray:
     Q = P.astype(np.float64).copy()
@@ -96,14 +101,17 @@ def _scale_phys(P: np.ndarray, voxel_size: VoxelSize) -> np.ndarray:
         Q *= (arr.ravel()[:3])[None, :]
     return Q
 
+
 def streamline_length(sl_xyz: np.ndarray, voxel_size: VoxelSize) -> float:
     P = _scale_phys(sl_xyz, voxel_size)
     diffs = np.diff(P, axis=0)
     return float(np.linalg.norm(diffs, axis=1).sum())
 
+
 def chord_length(sl_xyz: np.ndarray, voxel_size: VoxelSize) -> float:
     P = _scale_phys(sl_xyz, voxel_size)
     return float(np.linalg.norm(P[-1] - P[0]))
+
 
 def curvature_discrete(sl_xyz: np.ndarray, voxel_size: VoxelSize) -> np.ndarray:
     if len(sl_xyz) < 3:
@@ -121,8 +129,13 @@ def curvature_discrete(sl_xyz: np.ndarray, voxel_size: VoxelSize) -> np.ndarray:
         kappa = np.where(denom > 0, (area2) / denom, 0.0)
     return np.nan_to_num(kappa).astype(np.float32)
 
-def percentile_bounds(values_list: List[np.ndarray], p_lo: float, p_hi: float) -> Tuple[float, float]:
-    vals = np.concatenate([v[np.isfinite(v)] for v in values_list if v.size > 0], axis=0)
+
+def percentile_bounds(
+    values_list: list[np.ndarray], p_lo: float, p_hi: float
+) -> tuple[float, float]:
+    vals = np.concatenate(
+        [v[np.isfinite(v)] for v in values_list if v.size > 0], axis=0
+    )
     if vals.size == 0:
         return 0.0, 1.0
     lo = float(np.percentile(vals, p_lo))
@@ -131,31 +144,43 @@ def percentile_bounds(values_list: List[np.ndarray], p_lo: float, p_hi: float) -
         lo, hi = lo - 0.5, hi + 0.5
     return lo, hi
 
-def gaussian_kde_1d(samples: np.ndarray, grid: np.ndarray, bandwidth: Optional[float] = None) -> np.ndarray:
+
+def gaussian_kde_1d(
+    samples: np.ndarray, grid: np.ndarray, bandwidth: float | None = None
+) -> np.ndarray:
     x = samples[np.isfinite(samples)].astype(np.float64)
     n = len(x)
     if n < 2:
         return np.zeros_like(grid)
     std = x.std(ddof=1)
     if bandwidth is None:
-        h = std * (n ** (-1.0 / 5.0)) if std > 0 else (np.ptp(x) / 100.0 if np.ptp(x) > 0 else 1.0)
+        h = (
+            std * (n ** (-1.0 / 5.0))
+            if std > 0
+            else (np.ptp(x) / 100.0 if np.ptp(x) > 0 else 1.0)
+        )
     else:
         h = float(bandwidth)
     inv = 1.0 / (h * np.sqrt(2.0 * np.pi))
     Z = (grid[:, None] - x[None, :]) / h
     return inv * np.exp(-0.5 * Z * Z).mean(axis=1)
 
+
 def make_grid(lo: float, hi: float, n_points: int = 512) -> np.ndarray:
-    if hi <= lo: hi = lo + 1.0
+    if hi <= lo:
+        hi = lo + 1.0
     return np.linspace(lo, hi, n_points)
 
+
 # ---------- plotting ----------
+
 
 def normalize_curve(y: np.ndarray, do_norm: bool) -> np.ndarray:
     if not do_norm or y.size == 0:
         return y
     m = np.max(y)
     return y / m if m > 0 else y
+
 
 def plot_hist(ax, data, bins, xlabel, normalize, label):
     counts, edges = np.histogram(data, bins=bins)
@@ -169,11 +194,13 @@ def plot_hist(ax, data, bins, xlabel, normalize, label):
         alpha=0.4,
         label=label,
         edgecolor="black",
-        linewidth=0.8
+        linewidth=0.8,
     )
 
     ax.set_xlabel(xlabel, fontweight="bold")
-    ax.set_ylabel("Frequency" if not normalize else "Normalized (0–1)", fontweight="bold")
+    ax.set_ylabel(
+        "Frequency" if not normalize else "Normalized (0–1)", fontweight="bold"
+    )
 
 
 def plot_kde(ax, data, grid, xlabel, bandwidth_mult, normalize, label):
@@ -181,7 +208,11 @@ def plot_kde(ax, data, grid, xlabel, bandwidth_mult, normalize, label):
     if n == 0:
         return
     std = data.std(ddof=1) if n > 1 else 0.0
-    h_scott = std * (n ** (-1.0 / 5.0)) if std > 0 else (np.ptp(data) / 100.0 if np.ptp(data) > 0 else 1.0)
+    h_scott = (
+        std * (n ** (-1.0 / 5.0))
+        if std > 0
+        else (np.ptp(data) / 100.0 if np.ptp(data) > 0 else 1.0)
+    )
     bw = h_scott * bandwidth_mult if bandwidth_mult != 1.0 else None
     dens = gaussian_kde_1d(data, grid, bandwidth=bw)
     y = dens
@@ -191,9 +222,13 @@ def plot_kde(ax, data, grid, xlabel, bandwidth_mult, normalize, label):
     ax.set_xlabel(xlabel, fontweight="bold")
     ax.set_ylabel("Density" if not normalize else "Normalized (0–1)", fontweight="bold")
 
+
 # ---------- compute metrics ----------
 
-def compute_metrics(path: Path, key: Optional[str], voxel_size: VoxelSize, min_points: int):
+
+def compute_metrics(
+    path: Path, key: str | None, voxel_size: VoxelSize, min_points: int
+):
     print(f"Load {path}")
     sls = load_streamlines(path, key)
 
@@ -203,7 +238,9 @@ def compute_metrics(path: Path, key: Optional[str], voxel_size: VoxelSize, min_p
         min_vals = all_pts.min(axis=0)
         max_vals = all_pts.max(axis=0)
         size = max_vals - min_vals
-        print(f"Space size (pixels): {size} (x={size[0]:.1f}, y={size[1]:.1f}, z={size[2]:.1f})")
+        print(
+            f"Space size (pixels): {size} (x={size[0]:.1f}, y={size[1]:.1f}, z={size[2]:.1f})"
+        )
 
     lengths, mean_curv, torts = [], [], []
     for sl in sls:
@@ -216,10 +253,15 @@ def compute_metrics(path: Path, key: Optional[str], voxel_size: VoxelSize, min_p
         lengths.append(L)
         mean_curv.append(K.mean() if K.size else 0.0)
         torts.append(tort)
-    return dict(length=np.array(lengths), mean_curvature=np.array(mean_curv), tortuosity=np.array(torts))
+    return dict(
+        length=np.array(lengths),
+        mean_curvature=np.array(mean_curv),
+        tortuosity=np.array(torts),
+    )
 
 
 # ---------- CLI ----------
+
 
 def script():
     ap = argparse.ArgumentParser()
@@ -233,7 +275,9 @@ def script():
     ap.add_argument("--bandwidth-mult", type=float, default=1.0)
     ap.add_argument("--clip", type=float, nargs=2, default=(0.1, 99.9))
     ap.add_argument("--kde", action="store_true")
-    ap.add_argument("--normalize", action="store_true", help="Rescale y-axis between 0 and 1")
+    ap.add_argument(
+        "--normalize", action="store_true", help="Rescale y-axis between 0 and 1"
+    )
     ap.add_argument("--xscale", type=str, choices=["linear", "log"], default="linear")
     ap.add_argument("--yscale", type=str, choices=["linear", "log"], default="linear")
     ap.add_argument("--outdir", type=Path, default=Path("./compare_out"))
@@ -283,7 +327,9 @@ def script():
             data = data[np.isfinite(data)]
             label = m["label"]
             if args.kde:
-                plot_kde(ax, data, grid, xlabel, args.bandwidth_mult, args.normalize, label)
+                plot_kde(
+                    ax, data, grid, xlabel, args.bandwidth_mult, args.normalize, label
+                )
             else:
                 plot_hist(ax, data, bins, xlabel, args.normalize, label)
 
@@ -296,12 +342,12 @@ def script():
         if args.yscale == "linear":
             ax.set_ylim(bottom=0)
 
-
         ax.legend()
         fig.tight_layout()
         fig.savefig(args.outdir / f"{metric}.png", bbox_inches="tight")
         fig.savefig(args.outdir / f"{metric}.pdf", bbox_inches="tight")
         plt.show()
+
 
 if __name__ == "__main__":
     script()

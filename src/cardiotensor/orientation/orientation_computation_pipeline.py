@@ -3,7 +3,7 @@ import multiprocessing as mp
 import os
 import sys
 import time
-from typing import Tuple, Sequence
+from collections.abc import Sequence
 
 import numpy as np
 from alive_progress import alive_bar
@@ -13,9 +13,9 @@ from cardiotensor.orientation.orientation_computation_functions import (
     adjust_start_end_index,
     calculate_center_vector,
     calculate_structure_tensor,
+    compute_azimuth_and_elevation,
     compute_fraction_anisotropy,
     compute_helix_and_transverse_angles,
-    compute_azimuth_and_elevation,
     interpolate_points,
     plot_images,
     remove_padding,
@@ -35,7 +35,7 @@ def check_already_processed(
     write_vectors: bool,
     write_angles: bool,
     output_format: str,
-    angle_names: Tuple[str, str] = ("HA", "IA"),
+    angle_names: tuple[str, str] = ("HA", "IA"),
     fa_name: str = "FA",
     extra_expected: Sequence[str] | None = None,
 ) -> bool:
@@ -78,7 +78,9 @@ def check_already_processed(
     # Normalize extension
     ext = output_format.lstrip(".")
     if not ext:
-        raise ValueError("output_format must be a non-empty extension like 'jp2' or 'tif'.")
+        raise ValueError(
+            "output_format must be a non-empty extension like 'jp2' or 'tif'."
+        )
 
     # Prepare optional extras
     extra_expected = tuple(extra_expected or ())
@@ -112,7 +114,6 @@ def check_already_processed(
 
     print(f"Checking already processed files: all expected files exist in {output_dir}")
     return True
-
 
 
 # --- main API ---
@@ -163,7 +164,6 @@ def compute_orientation(
     if sigma > rho:
         raise ValueError("sigma must be <= rho")
 
-
     if angle_mode.lower() == "ha_ia":
         angle_names = ("HA", "IA")
         angle_titles = ("Helix Angle", "Intrusion Angle")
@@ -174,7 +174,6 @@ def compute_orientation(
         angle_ranges = ((-180, 180), (-90, 90))
     else:
         raise ValueError("ANGLE_MODE must be 'ha_ia' or 'az_el'")
-
 
     print(f"""
 Parameters:
@@ -191,7 +190,6 @@ Parameters:
     - Use GPU:        {use_gpu}
     - Test mode:      {is_test}
     """)
-
 
     print("\n" + "-" * 40)
     print("READING VOLUME INFORMATION")
@@ -210,10 +208,15 @@ Parameters:
     print("Check if file is already processed...")
     if (
         check_already_processed(
-            output_dir, start_index, end_index,
-            write_vectors, write_angles, output_format,
-            angle_names=angle_names
-        ) and not is_test
+            output_dir,
+            start_index,
+            end_index,
+            write_vectors,
+            write_angles,
+            output_format,
+            angle_names=angle_names,
+        )
+        and not is_test
     ):
         print("\nAll images are already processed. Skipping computation.\n")
         return
@@ -334,7 +337,9 @@ Parameters:
             num_procs = mp.cpu_count()
 
         with mp.Pool(processes=num_procs) as pool:
-            with alive_bar(num_slices, title="Processing slices (Multiprocess)", bar="smooth") as bar:
+            with alive_bar(
+                num_slices, title="Processing slices (Multiprocess)", bar="smooth"
+            ) as bar:
                 results = []
                 for z in range(num_slices):
                     result = pool.apply_async(
@@ -353,7 +358,7 @@ Parameters:
                             write_vectors,
                             write_angles,
                             is_test,
-                            angle_mode,  
+                            angle_mode,
                         ),
                         callback=update_bar,
                     )
@@ -364,7 +369,9 @@ Parameters:
                     r.wait()
     else:
         # Single threaded path with a progress bar
-        with alive_bar(vec.shape[1], title="Processing slices (Single-thread)", bar="smooth") as bar:
+        with alive_bar(
+            vec.shape[1], title="Processing slices (Single-thread)", bar="smooth"
+        ) as bar:
             for z in range(vec.shape[1]):
                 compute_slice_angles_and_anisotropy(
                     z,
@@ -434,10 +441,16 @@ def compute_slice_angles_and_anisotropy(
             os.path.join(output_dir, "FA", f"FA_{idx:06d}.{ext}"),
         ]
     if write_vectors:
-        expected_paths.append(os.path.join(output_dir, "eigen_vec", f"eigen_vec_{idx:06d}.npy"))
+        expected_paths.append(
+            os.path.join(output_dir, "eigen_vec", f"eigen_vec_{idx:06d}.npy")
+        )
 
     # Skip if all outputs are already present and we are not in test mode
-    if not is_test and expected_paths and all(os.path.exists(p) for p in expected_paths):
+    if (
+        not is_test
+        and expected_paths
+        and all(os.path.exists(p) for p in expected_paths)
+    ):
         return
 
     # Build a small window around the slice index to estimate the local axis direction
@@ -454,18 +467,26 @@ def compute_slice_angles_and_anisotropy(
     # Compute FA and the chosen angle pair
     if write_angles or is_test:
         img_FA = compute_fraction_anisotropy(eigen_val_slice)
-        vector_field_slice_rotated = rotate_vectors_to_new_axis(vector_field_slice, center_vec)
+        vector_field_slice_rotated = rotate_vectors_to_new_axis(
+            vector_field_slice, center_vec
+        )
 
         if mode == "ha_ia":
             img_angle1, img_angle2 = compute_helix_and_transverse_angles(
                 vector_field_slice_rotated, center_point
             )
         else:  # "az_el"
-            img_angle1, img_angle2 = compute_azimuth_and_elevation(vector_field_slice_rotated)
+            img_angle1, img_angle2 = compute_azimuth_and_elevation(
+                vector_field_slice_rotated
+            )
 
     # Test mode: visualize a 2x2 figure and write to test subfolder
     if is_test:
-        titles = ("Helix Angle", "Intrusion Angle") if mode == "ha_ia" else ("Azimuth", "Elevation")
+        titles = (
+            ("Helix Angle", "Intrusion Angle")
+            if mode == "ha_ia"
+            else ("Azimuth", "Elevation")
+        )
         plot_images(
             img_slice,
             img_angle1,

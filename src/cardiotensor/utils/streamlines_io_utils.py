@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+
 import numpy as np
 
 
-def load_npz_streamlines(p: Path) -> Tuple[List[np.ndarray], Dict[str, List[np.ndarray]]]:
+def load_npz_streamlines(
+    p: Path,
+) -> tuple[list[np.ndarray], dict[str, list[np.ndarray]]]:
     """
     Load streamlines from a .npz file saved as object arrays.
     Expects 'streamlines' in (z, y, x). Converts to (x, y, z).
@@ -22,12 +24,12 @@ def load_npz_streamlines(p: Path) -> Tuple[List[np.ndarray], Dict[str, List[np.n
         raise ValueError("'streamlines' array missing in .npz")
 
     # stored as (z, y, x) convert to (x, y, z)
-    streamlines_xyz: List[np.ndarray] = [
+    streamlines_xyz: list[np.ndarray] = [
         np.asarray([(pt[2], pt[1], pt[0]) for pt in sl], dtype=np.float32)
         for sl in raw_streamlines.tolist()
     ]
 
-    per_point: Dict[str, List[np.ndarray]] = {}
+    per_point: dict[str, list[np.ndarray]] = {}
     for key in data.files:
         if key == "streamlines":
             continue
@@ -44,7 +46,9 @@ def load_npz_streamlines(p: Path) -> Tuple[List[np.ndarray], Dict[str, List[np.n
     return streamlines_xyz, per_point
 
 
-def load_trk_streamlines(p: Path) -> Tuple[List[np.ndarray], Dict[str, List[np.ndarray]]]:
+def load_trk_streamlines(
+    p: Path,
+) -> tuple[list[np.ndarray], dict[str, list[np.ndarray]]]:
     """
     Load streamlines and all per-point fields from a TrackVis .trk file.
     Returns streamlines in (x, y, z) voxel/world space (as stored in the TRK),
@@ -66,12 +70,12 @@ def load_trk_streamlines(p: Path) -> Tuple[List[np.ndarray], Dict[str, List[np.n
 
     streamlines_xyz = [np.asarray(sl, dtype=np.float32) for sl in tg.streamlines]
 
-    per_point: Dict[str, List[np.ndarray]] = {}
+    per_point: dict[str, list[np.ndarray]] = {}
     dpp = getattr(tg, "data_per_point", None)
     if dpp:
         for name, arrseq in dpp.items():
             # arrseq is an ArraySequence with shape (Ni, C). We flatten to 1D per point if C==1.
-            vals: List[np.ndarray] = []
+            vals: list[np.ndarray] = []
             for a in arrseq:
                 a = np.asarray(a)
                 if a.ndim == 2 and a.shape[1] == 1:
@@ -89,12 +93,12 @@ def load_trk_streamlines(p: Path) -> Tuple[List[np.ndarray], Dict[str, List[np.n
     return streamlines_xyz, per_point
 
 
-def ha_to_degrees_per_streamline(ha_list: List[np.ndarray]) -> List[np.ndarray]:
+def ha_to_degrees_per_streamline(ha_list: list[np.ndarray]) -> list[np.ndarray]:
     """
     Convert HA values that might be byte-scaled (0..255) to degrees (-90..90).
     Leaves values unchanged if they already look like degrees.
     """
-    out: List[np.ndarray] = []
+    out: list[np.ndarray] = []
     for ha in ha_list:
         ha = np.asarray(ha)
         if ha.size > 0 and np.nanmax(ha) > 1.5:  # likely 0..255
@@ -139,17 +143,13 @@ def normalize_attrs_to_degrees(attrs: dict | None) -> dict[str, list[np.ndarray]
     return normalized
 
 
-
-
-
-
-def compute_elevation_angles(streamlines_xyz: List[np.ndarray]) -> List[np.ndarray]:
+def compute_elevation_angles(streamlines_xyz: list[np.ndarray]) -> list[np.ndarray]:
     """
     Compute per-vertex elevation angle from streamline geometry:
     elevation = arcsin(z-component of unit tangent) in degrees.
     The last vertex copies the previous value to keep lengths aligned.
     """
-    all_angles: List[np.ndarray] = []
+    all_angles: list[np.ndarray] = []
     for pts in streamlines_xyz:
         pts = np.asarray(pts, dtype=np.float32)
         n = len(pts)
@@ -165,12 +165,20 @@ def compute_elevation_angles(streamlines_xyz: List[np.ndarray]) -> List[np.ndarr
     return all_angles
 
 
-def reduce_per_edge(values_per_point: List[np.ndarray], how: str = "mean") -> np.ndarray:
+def reduce_per_edge(
+    values_per_point: list[np.ndarray], how: str = "mean"
+) -> np.ndarray:
     """
     Reduce per-point values along each streamline to a single scalar per edge.
     """
     if how == "mean":
-        return np.array([float(np.nanmean(v)) if v.size else np.nan for v in values_per_point], dtype=float)
+        return np.array(
+            [float(np.nanmean(v)) if v.size else np.nan for v in values_per_point],
+            dtype=float,
+        )
     if how == "median":
-        return np.array([float(np.nanmedian(v)) if v.size else np.nan for v in values_per_point], dtype=float)
+        return np.array(
+            [float(np.nanmedian(v)) if v.size else np.nan for v in values_per_point],
+            dtype=float,
+        )
     raise ValueError("how must be 'mean' or 'median'")

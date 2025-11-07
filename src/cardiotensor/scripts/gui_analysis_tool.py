@@ -72,7 +72,9 @@ def script() -> None:
     output_dir = params.get("OUTPUT_PATH", "./output")
 
     # Determine slice number, CLI overrides config
-    N_slice = args.N_slice if args.N_slice is not None else params.get("N_SLICE_TEST", 0)
+    N_slice = (
+        args.N_slice if args.N_slice is not None else params.get("N_SLICE_TEST", 0)
+    )
 
     # Launch Qt app
     app = QApplication(sys.argv)

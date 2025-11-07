@@ -59,6 +59,6 @@ repos:
     rev: v2.3.0
     hooks:
       - id: codespell
-        args: [--write-changes, --skip, "*.log"]
+        args: [--write-changes, --skip, "*.log", "-L", "lod,LOD"]
         exclude: ^(examples/|paper/)
 

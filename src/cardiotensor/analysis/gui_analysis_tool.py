@@ -4,27 +4,52 @@ from pathlib import Path
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import Colormap
 from PyQt5.QtGui import (
-    QBrush, QColor, QDoubleValidator, QImage, QIntValidator, QKeySequence,
-    QPainter, QPen, QPixmap,
+    QBrush,
+    QColor,
+    QDoubleValidator,
+    QImage,
+    QIntValidator,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
 )
 from PyQt5.QtWidgets import (
-    QAction, QButtonGroup, QFileDialog, QGraphicsEllipseItem, QGraphicsLineItem,
-    QGraphicsPixmapItem, QGraphicsScene, QGraphicsSceneMouseEvent, QGraphicsView,
-    QHBoxLayout, QLabel, QLineEdit, QMenuBar, QPushButton, QRadioButton, QShortcut,
-    QSpinBox, QVBoxLayout, QWidget,
+    QAction,
+    QButtonGroup,
+    QFileDialog,
+    QGraphicsEllipseItem,
+    QGraphicsLineItem,
+    QGraphicsPixmapItem,
+    QGraphicsScene,
+    QGraphicsSceneMouseEvent,
+    QGraphicsView,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenuBar,
+    QPushButton,
+    QRadioButton,
+    QShortcut,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
 from skimage.measure import block_reduce
-from matplotlib.colors import Colormap
 
 from cardiotensor.analysis.analysis_functions import (
-    calculate_intensities, find_end_points, plot_intensity, save_intensity,
+    calculate_intensities,
+    find_end_points,
+    plot_intensity,
+    save_intensity,
 )
-from cardiotensor.utils.DataReader import DataReader
 from cardiotensor.colormaps.helix_angle import helix_angle_cmap
-
+from cardiotensor.utils.DataReader import DataReader
 
 # ---------- small helpers ----------
+
 
 def np2pixmap(np_img: np.ndarray) -> QPixmap:
     h, w, _ = np_img.shape
@@ -79,7 +104,9 @@ def plot_label_and_limits(mode: str):
     if m == "FA":
         return "Fractional Anisotropy", 0.0, 1.0
     if m in {"HA", "IA", "EL"}:
-        name = {"HA": "Helix Angle", "IA": "Intrusion Angle", "EL": "Elevation Angle"}[m]
+        name = {"HA": "Helix Angle", "IA": "Intrusion Angle", "EL": "Elevation Angle"}[
+            m
+        ]
         return f"{name} (°)", -90.0, 90.0
     if m == "AZ":
         return "Azimuth (°)", 0.0, 360.0
@@ -128,10 +155,14 @@ class Window(QWidget):
         # Discover available modes, select default
         self.available_modes = discover_modes(self.output_path)
         if not self.available_modes:
-            sys.exit(f"No angle or FA folders found in {self.output_path}. Expected one of HA, IA, EL, AZ, FA.")
+            sys.exit(
+                f"No angle or FA folders found in {self.output_path}. Expected one of HA, IA, EL, AZ, FA."
+            )
         self.image_mode = (image_mode or self.available_modes[0]).upper()
         if self.image_mode not in self.available_modes:
-            sys.exit(f"Requested mode {self.image_mode} not found. Available: {self.available_modes}")
+            sys.exit(
+                f"Requested mode {self.image_mode} not found. Available: {self.available_modes}"
+            )
 
         # DataReader for current mode
         self.data_reader = DataReader(self.output_path / self.image_mode)
@@ -156,13 +187,21 @@ class Window(QWidget):
         menu_bar = QMenuBar(self)
         file_menu = menu_bar.addMenu("File")
         if file_menu is not None:
-            act = QAction("Change Slice", self); act.triggered.connect(self.change_slice_dialog); file_menu.addAction(act)
-            act = QAction("Choose image type", self); act.triggered.connect(self.change_img_mode); file_menu.addAction(act)
+            act = QAction("Change Slice", self)
+            act.triggered.connect(self.change_slice_dialog)
+            file_menu.addAction(act)
+            act = QAction("Choose image type", self)
+            act.triggered.connect(self.change_img_mode)
+            file_menu.addAction(act)
 
         graph_menu = menu_bar.addMenu("Graph")
         if graph_menu is not None:
-            a = QAction("Set x axis limits", self); a.triggered.connect(self.set_x_lim_dialog); graph_menu.addAction(a)
-            a = QAction("Set y axis limits", self); a.triggered.connect(self.set_y_lim_dialog); graph_menu.addAction(a)
+            a = QAction("Set x axis limits", self)
+            a.triggered.connect(self.set_x_lim_dialog)
+            graph_menu.addAction(a)
+            a = QAction("Set y axis limits", self)
+            a.triggered.connect(self.set_y_lim_dialog)
+            graph_menu.addAction(a)
 
         vbox = QVBoxLayout(self)
         vbox.setMenuBar(menu_bar)
@@ -208,7 +247,11 @@ class Window(QWidget):
 
     def update_text(self) -> None:
         angle_range_text = self.input_angle_range.text().strip()
-        self.angle_range = float(angle_range_text) if angle_range_text and float(angle_range_text) > 0 else 0.1
+        self.angle_range = (
+            float(angle_range_text)
+            if angle_range_text and float(angle_range_text) > 0
+            else 0.1
+        )
         if not angle_range_text or float(angle_range_text) <= 0:
             self.input_angle_range.setText("0.1")
 
@@ -233,11 +276,16 @@ class Window(QWidget):
         sx, sy = self.start_pos
         ex, ey = self.end_point.rect().center().x(), self.end_point.rect().center().y()
 
-        self.end_points = find_end_points((sy, sx), (ey, ex), float(self.angle_range), int(self.N_line))
+        self.end_points = find_end_points(
+            (sy, sx), (ey, ex), float(self.angle_range), int(self.N_line)
+        )
 
         for i in range(self.N_line):
             line = self.scene.addLine(
-                sx, sy, self.end_points[i][1], self.end_points[i][0],
+                sx,
+                sy,
+                self.end_points[i][1],
+                self.end_points[i][0],
                 pen=QPen(QColor("black"), 2),
             )
             if line is not None:
@@ -249,17 +297,26 @@ class Window(QWidget):
                 self.scene.removeItem(item)
 
         self.start_point = self.scene.addEllipse(
-            sx - self.half_point_size, sy - self.half_point_size, self.point_size, self.point_size,
-            pen=QPen(QColor("black")), brush=QBrush(QColor("black")),
+            sx - self.half_point_size,
+            sy - self.half_point_size,
+            self.point_size,
+            self.point_size,
+            pen=QPen(QColor("black")),
+            brush=QBrush(QColor("black")),
         )
         self.end_point = self.scene.addEllipse(
-            ex - self.half_point_size, ey - self.half_point_size, self.point_size, self.point_size,
-            pen=QPen(QColor("black")), brush=QBrush(QColor("black")),
+            ex - self.half_point_size,
+            ey - self.half_point_size,
+            self.point_size,
+            self.point_size,
+            pen=QPen(QColor("black")),
+            brush=QBrush(QColor("black")),
         )
 
     def plot_profile(self) -> None:
         if self.line_np is None or not self.line_np.any():
-            print("No line drawn"); return
+            print("No line drawn")
+            return
 
         start_point = self.line_np[0:2] * self.bin_factor
         end_point = self.line_np[2:] * self.bin_factor
@@ -267,19 +324,28 @@ class Window(QWidget):
         label_y, minimum, maximum = plot_label_and_limits(self.image_mode)
 
         self.intensity_profiles = calculate_intensities(
-            self.current_img, start_point, end_point, self.angle_range, self.N_line,
-            max_value=maximum, min_value=minimum,
+            self.current_img,
+            start_point,
+            end_point,
+            self.angle_range,
+            self.N_line,
+            max_value=maximum,
+            min_value=minimum,
         )
 
         plot_intensity(
-            self.intensity_profiles, label_y=label_y,
-            x_max_lim=self.x_max_lim, x_min_lim=self.x_min_lim,
-            y_max_lim=self.y_max_lim, y_min_lim=self.y_min_lim,
+            self.intensity_profiles,
+            label_y=label_y,
+            x_max_lim=self.x_max_lim,
+            x_min_lim=self.x_min_lim,
+            y_max_lim=self.y_max_lim,
+            y_min_lim=self.y_min_lim,
         )
 
     def save_profile(self) -> None:
         if self.line_np is None or not self.line_np.any():
-            print("No line drawn"); return
+            print("No line drawn")
+            return
 
         start_point = self.line_np[0:2] * self.bin_factor
         end_point = self.line_np[2:] * self.bin_factor
@@ -287,18 +353,27 @@ class Window(QWidget):
         if not self.intensity_profiles:
             label_y, minimum, maximum = plot_label_and_limits(self.image_mode)
             self.intensity_profiles = calculate_intensities(
-                self.current_img, start_point, end_point, self.angle_range, self.N_line,
-                max_value=maximum, min_value=minimum,
+                self.current_img,
+                start_point,
+                end_point,
+                self.angle_range,
+                self.N_line,
+                max_value=maximum,
+                min_value=minimum,
             )
 
-        save_path, _ = QFileDialog.getSaveFileName(self, "Save Profile", "", "Csv Files (*.csv);;All Files (*)")
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Profile", "", "Csv Files (*.csv);;All Files (*)"
+        )
         if save_path:
             if not save_path.lower().endswith(".csv"):
                 save_path += ".csv"
             save_intensity(self.intensity_profiles, save_path)
 
     def load_image(self, N_slice: int, bin_factor: int | None = None) -> np.ndarray:
-        img = self.data_reader.load_volume(start_index=N_slice, end_index=N_slice + 1)[0].astype(np.float32)
+        img = self.data_reader.load_volume(start_index=N_slice, end_index=N_slice + 1)[
+            0
+        ].astype(np.float32)
 
         if bin_factor:
             img = block_reduce(img, block_size=(bin_factor, bin_factor), func=np.mean)
@@ -312,9 +387,13 @@ class Window(QWidget):
                 start_index=int(self.N_slice / mask_binf),
                 end_index=int(self.N_slice / mask_binf) + 1,
             )[0].astype(np.float32)
-            m = cv2.resize(m, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR)
+            m = cv2.resize(
+                m, (img.shape[1], img.shape[0]), interpolation=cv2.INTER_LINEAR
+            )
             if m.shape != img.shape:
-                raise ValueError(f"Mask shape {m.shape} does not match slice shape {img.shape}")
+                raise ValueError(
+                    f"Mask shape {m.shape} does not match slice shape {img.shape}"
+                )
             img[m == 0] = np.nan
 
         return img
@@ -328,7 +407,9 @@ class Window(QWidget):
             self.bin_factor *= 2
         print(f"Bin factor: {self.bin_factor}")
 
-        img_bin = block_reduce(current_img, block_size=(self.bin_factor, self.bin_factor), func=np.mean)
+        img_bin = block_reduce(
+            current_img, block_size=(self.bin_factor, self.bin_factor), func=np.mean
+        )
 
         # convert to physical then normalize for display
         norm01 = convert_slice_for_display(img_bin, self.image_mode)
@@ -356,7 +437,7 @@ class Window(QWidget):
         self.view.setScene(self.scene)
 
         self.scene.mousePressEvent = self.mouse_press  # type: ignore
-        self.scene.mouseMoveEvent = self.mouse_move    # type: ignore
+        self.scene.mouseMoveEvent = self.mouse_move  # type: ignore
         self.scene.mouseReleaseEvent = self.mouse_release  # type: ignore
 
     # ---------- mouse handlers ----------
@@ -375,8 +456,12 @@ class Window(QWidget):
             pass
 
         self.start_point = self.scene.addEllipse(
-            x - self.half_point_size, y - self.half_point_size, self.point_size, self.point_size,
-            pen=QPen(QColor("black")), brush=QBrush(QColor("black")),
+            x - self.half_point_size,
+            y - self.half_point_size,
+            self.point_size,
+            self.point_size,
+            pen=QPen(QColor("black")),
+            brush=QBrush(QColor("black")),
         )
 
     def mouse_move(self, event: QGraphicsSceneMouseEvent | None) -> None:
@@ -388,12 +473,18 @@ class Window(QWidget):
         if self.end_point is not None and self.end_point.scene() == self.scene:
             self.scene.removeItem(self.end_point)
         self.end_point = self.scene.addEllipse(
-            x - self.half_point_size, y - self.half_point_size, self.point_size, self.point_size,
-            pen=QPen(QColor("black")), brush=QBrush(QColor("black")),
+            x - self.half_point_size,
+            y - self.half_point_size,
+            self.point_size,
+            self.point_size,
+            pen=QPen(QColor("black")),
+            brush=QBrush(QColor("black")),
         )
 
         sx, sy = self.start_pos
-        self.end_points = find_end_points((sy, sx), (y, x), float(self.angle_range), int(self.N_line))
+        self.end_points = find_end_points(
+            (sy, sx), (y, x), float(self.angle_range), int(self.N_line)
+        )
 
         if hasattr(self, "lines") and self.lines:
             for l in self.lines:
@@ -403,7 +494,10 @@ class Window(QWidget):
         self.lines = []
         for i in range(self.N_line):
             line = self.scene.addLine(
-                sx, sy, self.end_points[i][1], self.end_points[i][0],
+                sx,
+                sy,
+                self.end_points[i][1],
+                self.end_points[i][0],
                 pen=QPen(QColor("black"), 2),
             )
             if line is not None:
@@ -420,12 +514,19 @@ class Window(QWidget):
     # ---------- dialogs ----------
 
     def change_slice_dialog(self) -> None:
-        self.dialog = QWidget(); self.dialog.setWindowTitle("Change Slice")
+        self.dialog = QWidget()
+        self.dialog.setWindowTitle("Change Slice")
         layout = QVBoxLayout()
-        self.spin_box = QSpinBox(); self.spin_box.setMinimum(0); self.spin_box.setMaximum(self.data_reader.shape[0] - 1)
-        self.spin_box.setValue(self.N_slice); layout.addWidget(self.spin_box)
-        change_button = QPushButton("Change"); change_button.clicked.connect(self.change_slice); layout.addWidget(change_button)
-        self.dialog.setLayout(layout); self.dialog.show()
+        self.spin_box = QSpinBox()
+        self.spin_box.setMinimum(0)
+        self.spin_box.setMaximum(self.data_reader.shape[0] - 1)
+        self.spin_box.setValue(self.N_slice)
+        layout.addWidget(self.spin_box)
+        change_button = QPushButton("Change")
+        change_button.clicked.connect(self.change_slice)
+        layout.addWidget(change_button)
+        self.dialog.setLayout(layout)
+        self.dialog.show()
 
     def change_slice(self) -> None:
         self.N_slice = self.spin_box.value()
@@ -434,14 +535,22 @@ class Window(QWidget):
         self.dialog.close()
 
     def set_x_lim_dialog(self) -> None:
-        self.dialog = QWidget(); self.dialog.setWindowTitle("Change X-Axis Limits")
+        self.dialog = QWidget()
+        self.dialog.setWindowTitle("Change X-Axis Limits")
         layout = QVBoxLayout()
-        self.x_min_spin_box = QSpinBox(); self.x_max_spin_box = QSpinBox()
-        self.x_min_spin_box.setRange(-10000, 10000); self.x_max_spin_box.setRange(-10000, 10000)
-        layout.addWidget(QLabel("X Min:")); layout.addWidget(self.x_min_spin_box)
-        layout.addWidget(QLabel("X Max:")); layout.addWidget(self.x_max_spin_box)
-        change_button = QPushButton("Set X Limits"); change_button.clicked.connect(self.set_x_lim); layout.addWidget(change_button)
-        self.dialog.setLayout(layout); self.dialog.show()
+        self.x_min_spin_box = QSpinBox()
+        self.x_max_spin_box = QSpinBox()
+        self.x_min_spin_box.setRange(-10000, 10000)
+        self.x_max_spin_box.setRange(-10000, 10000)
+        layout.addWidget(QLabel("X Min:"))
+        layout.addWidget(self.x_min_spin_box)
+        layout.addWidget(QLabel("X Max:"))
+        layout.addWidget(self.x_max_spin_box)
+        change_button = QPushButton("Set X Limits")
+        change_button.clicked.connect(self.set_x_lim)
+        layout.addWidget(change_button)
+        self.dialog.setLayout(layout)
+        self.dialog.show()
 
     def set_x_lim(self) -> None:
         self.x_min_lim = self.x_min_spin_box.value()
@@ -449,14 +558,22 @@ class Window(QWidget):
         self.dialog.close()
 
     def set_y_lim_dialog(self) -> None:
-        self.dialog = QWidget(); self.dialog.setWindowTitle("Change Y-Axis Limits")
+        self.dialog = QWidget()
+        self.dialog.setWindowTitle("Change Y-Axis Limits")
         layout = QVBoxLayout()
-        self.y_min_spin_box = QSpinBox(); self.y_max_spin_box = QSpinBox()
-        self.y_min_spin_box.setRange(-10000, 10000); self.y_max_spin_box.setRange(-10000, 10000)
-        layout.addWidget(QLabel("Y Min:")); layout.addWidget(self.y_min_spin_box)
-        layout.addWidget(QLabel("Y Max:")); layout.addWidget(self.y_max_spin_box)
-        change_button = QPushButton("Set Y Limits"); change_button.clicked.connect(self.set_y_lim); layout.addWidget(change_button)
-        self.dialog.setLayout(layout); self.dialog.show()
+        self.y_min_spin_box = QSpinBox()
+        self.y_max_spin_box = QSpinBox()
+        self.y_min_spin_box.setRange(-10000, 10000)
+        self.y_max_spin_box.setRange(-10000, 10000)
+        layout.addWidget(QLabel("Y Min:"))
+        layout.addWidget(self.y_min_spin_box)
+        layout.addWidget(QLabel("Y Max:"))
+        layout.addWidget(self.y_max_spin_box)
+        change_button = QPushButton("Set Y Limits")
+        change_button.clicked.connect(self.set_y_lim)
+        layout.addWidget(change_button)
+        self.dialog.setLayout(layout)
+        self.dialog.show()
 
     def set_y_lim(self) -> None:
         self.y_min_lim = self.y_min_spin_box.value()
@@ -464,7 +581,8 @@ class Window(QWidget):
         self.dialog.close()
 
     def change_img_mode(self) -> None:
-        self.dialog = QWidget(); self.dialog.setWindowTitle("Choose Image Mode")
+        self.dialog = QWidget()
+        self.dialog.setWindowTitle("Choose Image Mode")
         layout = QVBoxLayout()
 
         # dynamic radios based on discovered modes
@@ -482,10 +600,13 @@ class Window(QWidget):
         confirm_button.clicked.connect(self._apply_img_mode_selection)
         layout.addWidget(confirm_button)
 
-        self.dialog.setLayout(layout); self.dialog.show()
+        self.dialog.setLayout(layout)
+        self.dialog.show()
 
     def _apply_img_mode_selection(self) -> None:
-        chosen = next((m for m, rb in self._mode_buttons.items() if rb.isChecked()), None)
+        chosen = next(
+            (m for m, rb in self._mode_buttons.items() if rb.isChecked()), None
+        )
         if chosen is None:
             return
         self.image_mode = chosen

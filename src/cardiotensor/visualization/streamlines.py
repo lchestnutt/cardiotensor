@@ -1,14 +1,16 @@
 from pathlib import Path
-from typing import List, Dict, Tuple
-import numpy as np
+
 import matplotlib.cm as cm
+import numpy as np
 
 from cardiotensor.colormaps.helix_angle import helix_angle_cmap
-from cardiotensor.visualization.fury_plotting_streamlines import show_streamlines
 from cardiotensor.utils.streamlines_io_utils import load_trk_streamlines
+from cardiotensor.visualization.fury_plotting_streamlines import show_streamlines
 
 
-def _normalize_attrs_to_degrees(attrs: Dict[str, List[np.ndarray]]) -> Dict[str, List[np.ndarray]]:
+def _normalize_attrs_to_degrees(
+    attrs: dict[str, list[np.ndarray]],
+) -> dict[str, list[np.ndarray]]:
     """
     Normalize known angle fields to degrees.
 
@@ -19,10 +21,10 @@ def _normalize_attrs_to_degrees(attrs: Dict[str, List[np.ndarray]]) -> Dict[str,
            else keep as float32
     Other fields are passed through unchanged.
     """
-    out: Dict[str, List[np.ndarray]] = {}
+    out: dict[str, list[np.ndarray]] = {}
     for name, seq in attrs.items():
         key = name.upper()
-        norm_list: List[np.ndarray] = []
+        norm_list: list[np.ndarray] = []
         for arr in seq:
             a = np.asarray(arr)
             if a.size == 0:
@@ -49,16 +51,16 @@ def _normalize_attrs_to_degrees(attrs: Dict[str, List[np.ndarray]]) -> Dict[str,
 
 
 def _compute_az_el_from_streamlines(
-    streamlines_xyz: List[np.ndarray],
-) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+    streamlines_xyz: list[np.ndarray],
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """
     Derive per-vertex azimuth and elevation from streamline tangents.
     - elevation = arcsin(ẑ) in degrees
     - azimuth   = atan2(ŷ, x̂) in degrees mapped to [0, 360)
     The last vertex repeats the previous angle to keep lengths aligned.
     """
-    az_list: List[np.ndarray] = []
-    el_list: List[np.ndarray] = []
+    az_list: list[np.ndarray] = []
+    el_list: list[np.ndarray] = []
     for pts in streamlines_xyz:
         pts = np.asarray(pts, dtype=np.float32)
         n = len(pts)
@@ -86,13 +88,13 @@ def _compute_az_el_from_streamlines(
 
 def visualize_streamlines(
     streamlines_file: str | Path,
-    color_by: str = "ha",              # {"ha","ia","az","el","elevation","azimuth"}
+    color_by: str = "ha",  # {"ha","ia","az","el","elevation","azimuth"}
     line_width: float = 4.0,
     subsample_factor: int = 1,
     filter_min_len: int | None = None,
     downsample_factor: int = 1,
     max_streamlines: int | None = None,
-    crop_bounds: tuple | None = None,   # ((xmin,xmax),(ymin,ymax),(zmin,zmax))
+    crop_bounds: tuple | None = None,  # ((xmin,xmax),(ymin,ymax),(zmin,zmax))
     interactive: bool = True,
     screenshot_path: str | None = None,
     window_size: tuple[int, int] = (800, 800),
@@ -109,24 +111,29 @@ def visualize_streamlines(
         raise ValueError("Only .trk input is supported here")
 
     print(f"Loading .trk streamlines: {p}")
-    streamlines_xyz, attrs = load_trk_streamlines(p)   # attrs is dict[str, List[np.ndarray]]
-
+    streamlines_xyz, attrs = load_trk_streamlines(
+        p
+    )  # attrs is dict[str, List[np.ndarray]]
 
     # Normalize known attributes to degrees
-    attrs_deg: Dict[str, List[np.ndarray]] = _normalize_attrs_to_degrees(attrs)
+    attrs_deg: dict[str, list[np.ndarray]] = _normalize_attrs_to_degrees(attrs)
 
     # ---- Inform the user of available angle fields ----
     available = list(attrs_deg.keys())
 
     # Also say that AZ and EL can be computed even if missing
-    print("\n🎨  Available angle fields in this .trk:", available if available else "None stored")
-    print("💡 Note: 'az' and 'el' can still be computed on-the-fly from streamline geometry.")
+    print(
+        "\n🎨  Available angle fields in this .trk:",
+        available if available else "None stored",
+    )
+    print(
+        "💡 Note: 'az' and 'el' can still be computed on-the-fly from streamline geometry."
+    )
     print("🧭 You can use: color_by = ha, ia, az, el, elevation, azimuth\n")
-
 
     # Decide the color scalar
     mode = color_by.lower().strip()
-    color_values: List[np.ndarray] | None = None
+    color_values: list[np.ndarray] | None = None
 
     if mode in {"ha", "ia", "az", "el"}:
         key = mode.upper()

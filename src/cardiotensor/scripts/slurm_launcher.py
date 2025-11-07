@@ -3,8 +3,6 @@
 """
 
 import argparse
-import os
-import sys
 
 from cardiotensor.launcher.slurm_launcher import slurm_launcher
 
@@ -38,7 +36,9 @@ def script() -> None:
     conf_file_path = args.conf_file_path
 
     # Launch processing using slurm_launcher
-    slurm_launcher(conf_file_path, start_index=args.start_index, end_index=args.end_index)
+    slurm_launcher(
+        conf_file_path, start_index=args.start_index, end_index=args.end_index
+    )
 
 
 if __name__ == "__main__":

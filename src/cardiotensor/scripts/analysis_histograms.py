@@ -25,41 +25,45 @@ Examples
 """
 
 from __future__ import annotations
-import argparse
-from pathlib import Path
-from typing import Dict, Optional, Tuple, Callable
 
-import numpy as np
+import argparse
+from collections.abc import Callable
+from pathlib import Path
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import numpy as np
 
-from cardiotensor.utils.utils import read_conf_file
 from cardiotensor.utils.DataReader import DataReader
+from cardiotensor.utils.utils import read_conf_file
 
-mpl.rcParams.update({
-    "savefig.dpi": 300,
-    "savefig.transparent": True,
-    "pdf.fonttype": 42,
-    "ps.fonttype": 42,
-    "figure.dpi": 120,
-    "font.size": 13,
-    "axes.labelsize": 13,
-    "legend.fontsize": 12,
-    "xtick.labelsize": 12,
-    "ytick.labelsize": 12,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.linewidth": 1,
-    "xtick.direction": "out",
-    "ytick.direction": "out",
-    "xtick.minor.visible": True,
-    "ytick.minor.visible": True,
-    "legend.frameon": False,
-})
+mpl.rcParams.update(
+    {
+        "savefig.dpi": 300,
+        "savefig.transparent": True,
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "figure.dpi": 120,
+        "font.size": 13,
+        "axes.labelsize": 13,
+        "legend.fontsize": 12,
+        "xtick.labelsize": 12,
+        "ytick.labelsize": 12,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.linewidth": 1,
+        "xtick.direction": "out",
+        "ytick.direction": "out",
+        "xtick.minor.visible": True,
+        "ytick.minor.visible": True,
+        "legend.frameon": False,
+    }
+)
 
 # ---------- discovery and io ----------
 
-def _discover_angle_dirs(base: Path) -> Dict[str, Path]:
+
+def _discover_angle_dirs(base: Path) -> dict[str, Path]:
     found = {}
     for key in ["HA", "IA", "AZ", "EL"]:
         p = base / key
@@ -67,19 +71,23 @@ def _discover_angle_dirs(base: Path) -> Dict[str, Path]:
             found[key] = p
     return found
 
+
 def _reader(dir_path: Path) -> DataReader:
     rdr = DataReader(dir_path)
     if len(rdr.shape) != 3:
         raise ValueError(f"Expected 3D volume at {dir_path}, got shape {rdr.shape}")
     return rdr
 
+
 # ---------- conversions ----------
+
 
 def _fa_to_unit(vol: np.ndarray) -> np.ndarray:
     vmax = float(np.nanmax(vol)) if vol.size else 0.0
     if vmax > 1.5:
         return np.clip(vol / 255.0, 0.0, 1.0).astype(np.float32)
     return vol.astype(np.float32)
+
 
 def _angle_to_deg(vol: np.ndarray, name: str, az_range: str) -> np.ndarray:
     vmax = float(np.nanmax(vol)) if vol.size else 0.0
@@ -98,7 +106,9 @@ def _angle_to_deg(vol: np.ndarray, name: str, az_range: str) -> np.ndarray:
         deg = vol
     return deg.astype(np.float32)
 
+
 # ---------- quantization aligned edges ----------
+
 
 def _quantized_edges(kind: str, az_range: str) -> np.ndarray:
     # 256 codes -> 257 edges, place edges at half steps
@@ -115,13 +125,15 @@ def _quantized_edges(kind: str, az_range: str) -> np.ndarray:
         return (k / 255.0).clip(0.0, 1.0)
     raise ValueError(f"Unknown quantized kind {kind}")
 
+
 # ---------- streaming utilities ----------
+
 
 def _slice_values_raw_then_convert(
     rdr: DataReader,
     z: int,
     convert_fn: Callable[[np.ndarray], np.ndarray],
-    mask_rdr: Optional[DataReader],
+    mask_rdr: DataReader | None,
 ) -> np.ndarray:
     """
     Load one Z slice raw, apply mask if provided, drop zeros on the RAW values,
@@ -145,14 +157,15 @@ def _slice_values_raw_then_convert(
     converted = convert_fn(raw)
     return converted.astype(np.float32)
 
+
 def _estimate_clip_percentiles(
     rdr: DataReader,
     convert_fn: Callable[[np.ndarray], np.ndarray],
-    mask_rdr: Optional[DataReader],
+    mask_rdr: DataReader | None,
     p_lo: float,
     p_hi: float,
     sample_budget: int,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     rng = np.random.default_rng(12345)
     Z = rdr.shape[0]
     per_slice_quota = max(1, sample_budget // max(1, Z))
@@ -173,10 +186,11 @@ def _estimate_clip_percentiles(
         return float(np.nanmin(samp)), float(np.nanmax(samp))
     return lo, hi
 
+
 def _stream_histogram(
     rdr: DataReader,
     convert_fn: Callable[[np.ndarray], np.ndarray],
-    mask_rdr: Optional[DataReader],
+    mask_rdr: DataReader | None,
     bin_edges: np.ndarray,
 ) -> np.ndarray:
     counts = np.zeros(len(bin_edges) - 1, dtype=np.int64)
@@ -196,7 +210,9 @@ def _stream_histogram(
         counts += h
     return counts
 
+
 # ---------- small smoothing utility ----------
+
 
 def _smooth_counts(counts: np.ndarray, win: int) -> np.ndarray:
     if win is None or win < 2:
@@ -205,11 +221,19 @@ def _smooth_counts(counts: np.ndarray, win: int) -> np.ndarray:
     kernel = np.ones(win, dtype=np.float32) / float(win)
     return np.convolve(counts.astype(np.float32), kernel, mode="same")
 
+
 # ---------- plotting ----------
 
-def _save_and_show_hist(counts: np.ndarray, edges: np.ndarray,
-                        xlabel: str, title: str, out_png: Path, out_pdf: Path,
-                        smooth: int = 0):
+
+def _save_and_show_hist(
+    counts: np.ndarray,
+    edges: np.ndarray,
+    xlabel: str,
+    title: str,
+    out_png: Path,
+    out_pdf: Path,
+    smooth: int = 0,
+):
     y = _smooth_counts(counts, smooth)
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.step(edges[:-1], y, where="post")
@@ -223,36 +247,70 @@ def _save_and_show_hist(counts: np.ndarray, edges: np.ndarray,
     plt.show()
     plt.close(fig)
 
+
 # ---------- CLI ----------
+
 
 def script():
     ap = argparse.ArgumentParser(
         description="Streaming histograms for FA and angles with optional mask.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    ap.add_argument("input", type=Path,
-                    help="A .conf file or a directory containing FA, HA, IA, AZ, EL subfolders.")
-    ap.add_argument("--output-dir", type=Path, default=None,
-                    help="Explicit OUTPUT_PATH if not using .conf.")
+    ap.add_argument(
+        "input",
+        type=Path,
+        help="A .conf file or a directory containing FA, HA, IA, AZ, EL subfolders.",
+    )
+    ap.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Explicit OUTPUT_PATH if not using .conf.",
+    )
     ap.add_argument("--fa-dir", type=Path, default=None)
     ap.add_argument("--ha-dir", type=Path, default=None)
     ap.add_argument("--ia-dir", type=Path, default=None)
     ap.add_argument("--az-dir", type=Path, default=None)
     ap.add_argument("--el-dir", type=Path, default=None)
-    ap.add_argument("--mask", type=Path, default=None,
-                    help="Optional mask volume dir, voxels > 0 kept. Masked zeros are excluded by default.")
-    ap.add_argument("--bins-angle", type=int, default=361,
-                    help="Bins for non-quantized angles. Quantized data uses 256 aligned bins automatically.")
-    ap.add_argument("--bins-fa", type=int, default=200,
-                    help="Bins for non-quantized FA. Quantized data uses 256 aligned bins automatically.")
-    ap.add_argument("--clip", type=float, nargs=2, default=(0.5, 99.5),
-                    metavar=("PLOW", "PHIGH"),
-                    help="Percentile clip for non-quantized data.")
+    ap.add_argument(
+        "--mask",
+        type=Path,
+        default=None,
+        help="Optional mask volume dir, voxels > 0 kept. Masked zeros are excluded by default.",
+    )
+    ap.add_argument(
+        "--bins-angle",
+        type=int,
+        default=361,
+        help="Bins for non-quantized angles. Quantized data uses 256 aligned bins automatically.",
+    )
+    ap.add_argument(
+        "--bins-fa",
+        type=int,
+        default=200,
+        help="Bins for non-quantized FA. Quantized data uses 256 aligned bins automatically.",
+    )
+    ap.add_argument(
+        "--clip",
+        type=float,
+        nargs=2,
+        default=(0.5, 99.5),
+        metavar=("PLOW", "PHIGH"),
+        help="Percentile clip for non-quantized data.",
+    )
     ap.add_argument("--az-range", choices=["0-360", "-180-180"], default="0-360")
-    ap.add_argument("--sample-for-clip", type=int, default=1_000_000,
-                    help="Target number of samples across slices to estimate percentiles.")
-    ap.add_argument("--smooth", type=int, default=0,
-                    help="Optional moving-average window in bins for display only.")
+    ap.add_argument(
+        "--sample-for-clip",
+        type=int,
+        default=1_000_000,
+        help="Target number of samples across slices to estimate percentiles.",
+    )
+    ap.add_argument(
+        "--smooth",
+        type=int,
+        default=0,
+        help="Optional moving-average window in bins for display only.",
+    )
     ap.add_argument("--outdir", type=Path, default=Path("./volume_hist_streaming"))
     args = ap.parse_args()
 
@@ -269,9 +327,14 @@ def script():
     outdir.mkdir(parents=True, exist_ok=True)
 
     # Assemble dirs
-    dirs: Dict[str, Path] = {}
+    dirs: dict[str, Path] = {}
     dirs["FA"] = args.fa_dir if args.fa_dir else (args.output_dir or base_out) / "FA"
-    angles_explicit = {"HA": args.ha_dir, "IA": args.ia_dir, "AZ": args.az_dir, "EL": args.el_dir}
+    angles_explicit = {
+        "HA": args.ha_dir,
+        "IA": args.ia_dir,
+        "AZ": args.az_dir,
+        "EL": args.el_dir,
+    }
     for k, p in angles_explicit.items():
         if p is not None:
             dirs[k] = p
@@ -292,7 +355,9 @@ def script():
         fa_r = _reader(dirs["FA"])
 
         # Peek a small sample before conversion to detect byte encoding
-        peek = fa_r.load_volume(start_index=0, end_index=1)[0].astype(np.float32).ravel()
+        peek = (
+            fa_r.load_volume(start_index=0, end_index=1)[0].astype(np.float32).ravel()
+        )
         if mask_rdr is not None:
             m0 = mask_rdr.load_volume(start_index=0, end_index=1)[0]
             peek = peek[m0 > 0]
@@ -302,13 +367,21 @@ def script():
         if is_byte:
             edges = _quantized_edges("FA", args.az_range)
         else:
-            lo, hi = _estimate_clip_percentiles(fa_r, _fa_to_unit, mask_rdr, p_lo, p_hi, args.sample_for_clip)
+            lo, hi = _estimate_clip_percentiles(
+                fa_r, _fa_to_unit, mask_rdr, p_lo, p_hi, args.sample_for_clip
+            )
             edges = np.linspace(lo, hi, args.bins_fa + 1)
 
         counts = _stream_histogram(fa_r, _fa_to_unit, mask_rdr, edges)
-        _save_and_show_hist(counts, edges, "FA", "FA histogram",
-                            outdir / "hist_FA.png", outdir / "hist_FA.pdf",
-                            smooth=args.smooth)
+        _save_and_show_hist(
+            counts,
+            edges,
+            "FA",
+            "FA histogram",
+            outdir / "hist_FA.png",
+            outdir / "hist_FA.pdf",
+            smooth=args.smooth,
+        )
     else:
         print("FA directory not found, skipping FA.")
 
@@ -320,28 +393,39 @@ def script():
         ang_r = _reader(dirs[ang])
 
         # Peek raw slice to detect byte encoding
-        peek = ang_r.load_volume(start_index=0, end_index=1)[0].astype(np.float32).ravel()
+        peek = (
+            ang_r.load_volume(start_index=0, end_index=1)[0].astype(np.float32).ravel()
+        )
         if mask_rdr is not None:
             m0 = mask_rdr.load_volume(start_index=0, end_index=1)[0]
             peek = peek[m0 > 0]
         peek = peek[peek != 0.0]
         is_byte = peek.size > 0 and np.nanmax(peek) > 1.5
 
-        convert = (lambda arr, a=ang: _angle_to_deg(arr, a, args.az_range))
+        convert = lambda arr, a=ang: _angle_to_deg(arr, a, args.az_range)
 
         if is_byte:
             edges = _quantized_edges(ang, args.az_range)
         else:
-            lo, hi = _estimate_clip_percentiles(ang_r, convert, mask_rdr, p_lo, p_hi, args.sample_for_clip)
+            lo, hi = _estimate_clip_percentiles(
+                ang_r, convert, mask_rdr, p_lo, p_hi, args.sample_for_clip
+            )
             edges = np.linspace(lo, hi, args.bins_angle + 1)
 
         counts = _stream_histogram(ang_r, convert, mask_rdr, edges)
         xlabel = f"{ang} (degrees)"
-        _save_and_show_hist(counts, edges, xlabel, f"{ang} histogram",
-                            outdir / f"hist_{ang}.png", outdir / f"hist_{ang}.pdf",
-                            smooth=args.smooth)
+        _save_and_show_hist(
+            counts,
+            edges,
+            xlabel,
+            f"{ang} histogram",
+            outdir / f"hist_{ang}.png",
+            outdir / f"hist_{ang}.pdf",
+            smooth=args.smooth,
+        )
 
     print(f"Done, figures in {outdir}")
+
 
 if __name__ == "__main__":
     script()

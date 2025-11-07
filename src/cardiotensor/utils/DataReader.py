@@ -1,20 +1,17 @@
-import sys
 import os
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from os import PathLike
 from pathlib import Path
 from typing import Any
 
 import cv2
-import dask
 import numpy as np
 import psutil
 import SimpleITK as sitk
-from alive_progress import alive_bar
-from scipy.ndimage import zoom
-from skimage.measure import block_reduce
 import tifffile as tiff
-
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from alive_progress import alive_bar
+from skimage.measure import block_reduce
 
 
 # ---------------------------
@@ -31,7 +28,10 @@ def _upsample_mask_integer(mask: np.ndarray, zf: int, yf: int, xf: int) -> np.nd
         out = np.repeat(out, xf, axis=2)
     return out
 
-def _fit(arr: np.ndarray, target: tuple[int, int, int], pad_value: int = 0) -> np.ndarray:
+
+def _fit(
+    arr: np.ndarray, target: tuple[int, int, int], pad_value: int = 0
+) -> np.ndarray:
     """
     Force `arr` (Z, Y, X) to exactly match `target` shape.
     Crops if too large, pads with `pad_value` if too small.
@@ -42,12 +42,13 @@ def _fit(arr: np.ndarray, target: tuple[int, int, int], pad_value: int = 0) -> n
     pady = max(0, ty - arr.shape[1])
     padx = max(0, tx - arr.shape[2])
     if padz or pady or padx:
-        arr = np.pad(arr,
-                     ((0, padz), (0, pady), (0, padx)),
-                     mode="constant",
-                     constant_values=pad_value)
+        arr = np.pad(
+            arr,
+            ((0, padz), (0, pady), (0, padx)),
+            mode="constant",
+            constant_values=pad_value,
+        )
     return arr
-
 
 
 class DataReader:
@@ -113,7 +114,7 @@ class DataReader:
                 )
 
             # Inspect first file
-            first_image = self._custom_image_reader(volume_info["file_list"][0])           
+            first_image = self._custom_image_reader(volume_info["file_list"][0])
             volume_info["dtype"] = first_image.dtype
 
             # Shape: handle scalar vs vector
@@ -234,7 +235,6 @@ class DataReader:
                 k = int(round(1.0 / f))
                 return k if k >= 1 and abs(f - (1.0 / k)) < 1e-1 else None
 
-
             # init all factors to None
             kz = ky = kx = None
             dz = dy = dx = None
@@ -274,7 +274,7 @@ class DataReader:
                 if dx is None:
                     raise ValueError(f"Non-integer downsample factor on X: {fx}")
                 volume = block_reduce(volume, block_size=(1, 1, dx), func=np.max)
-                        
+
             def _fmt(k, d):
                 if k is not None:
                     return f"x{k}"
@@ -282,13 +282,14 @@ class DataReader:
                     return f"/{d}"
                 return "x1"
 
-            print(f"Applied integer resampling: Z {_fmt(kz, dz)}, Y {_fmt(ky, dy)}, X {_fmt(kx, dx)}")
-            
-            # Enforce exact shape 
+            print(
+                f"Applied integer resampling: Z {_fmt(kz, dz)}, Y {_fmt(ky, dy)}, X {_fmt(kx, dx)}"
+            )
+
+            # Enforce exact shape
             volume = _fit(volume, (z1, y1, x1), pad_value=0)
 
         return volume
-
 
     def _custom_image_reader(self, file_path: Path) -> np.ndarray:
         """
@@ -310,8 +311,10 @@ class DataReader:
                 img = cv2.imread(str(file_path), -1)
                 if img is not None:
                     # Optional: warn once so users know performance/features may be reduced
-                    print(f"⚠ Falling back to OpenCV for TIFF '{file_path}' "
-                        f"(tifffile error: {e})")
+                    print(
+                        f"⚠ Falling back to OpenCV for TIFF '{file_path}' "
+                        f"(tifffile error: {e})"
+                    )
                     return img
                 # If even OpenCV fails, raise a helpful error
                 raise RuntimeError(
@@ -329,9 +332,6 @@ class DataReader:
             )
         return img
 
-
-
-
     def _load_image_stack(
         self, file_list: list[Path], start_index: int, end_index: int
     ) -> np.ndarray:
@@ -340,7 +340,7 @@ class DataReader:
         by preallocating the output and filling it in place. Uses a bounded thread pool
         for I/O bound reads and keeps slice order via indices.
         """
-        
+
         if end_index == 0:
             end_index = len(file_list)
 
@@ -358,7 +358,11 @@ class DataReader:
         slice_dtype = first.dtype
 
         # Preallocate output with correct layout
-        if self.volume_info["type"] == "npy" and first.ndim == 3 and first.shape[0] == 3:
+        if (
+            self.volume_info["type"] == "npy"
+            and first.ndim == 3
+            and first.shape[0] == 3
+        ):
             # Vector field stored per file as (3, Y, X) -> target (3, Z, Y, X)
             out_shape = (3, total_files, slice_shape[1], slice_shape[2])
             volume = np.empty(out_shape, dtype=slice_dtype)
@@ -403,10 +407,7 @@ class DataReader:
                     )
                 volume[z_idx, :, :] = arr
 
-
         max_workers = min(8, (os.cpu_count() or 8))
-
-        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         def _read_one(local_idx: int, p: Path):
             # local_idx is index within this slice of paths
@@ -422,17 +423,16 @@ class DataReader:
                 with ThreadPoolExecutor(max_workers=max_workers) as ex:
                     futures = {
                         ex.submit(_read_one, i, p): i
-                        for i, p in enumerate(paths[start_fill_idx:], start=start_fill_idx)
+                        for i, p in enumerate(
+                            paths[start_fill_idx:], start=start_fill_idx
+                        )
                     }
                     for fut in as_completed(futures):
                         z_idx, arr = fut.result()
                         _assign(z_idx, arr)
                         bar()
 
-
         return volume
-
-
 
     def check_memory_requirement(self, shape, dtype, safety_factor=0.8):
         """
@@ -590,5 +590,3 @@ def _load_raw_data_with_mhd(
     # End 3D fix
 
     return (data, meta_dict)
-
-

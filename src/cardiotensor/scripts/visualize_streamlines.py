@@ -140,7 +140,9 @@ def script() -> None:
         help="Path to save a PNG screenshot, no file is saved if omitted",
     )
     parser.add_argument("--width", type=int, default=800, help="Window width in pixels")
-    parser.add_argument("--height", type=int, default=800, help="Window height in pixels")
+    parser.add_argument(
+        "--height", type=int, default=800, help="Window height in pixels"
+    )
     parser.add_argument(
         "--colormap",
         type=str,
@@ -178,7 +180,9 @@ def script() -> None:
 
     # Validate choice
     if color_by != "elevation" and color_by not in dpp_lower:
-        print(f"Requested color-by '{args.color_by}' not found. Available: {', '.join(available)}")
+        print(
+            f"Requested color-by '{args.color_by}' not found. Available: {', '.join(available)}"
+        )
         sys.exit(2)
 
     # Choose colormap
@@ -204,7 +208,9 @@ def script() -> None:
     # Always render as tubes as requested earlier
     visualize_streamlines(
         streamlines_file=trk_path,
-        color_by=(color_by if color_by == "elevation" else dpp_lower[color_by]),  # pass original key if stored
+        color_by=(
+            color_by if color_by == "elevation" else dpp_lower[color_by]
+        ),  # pass original key if stored
         line_width=args.line_width,
         subsample_factor=args.subsample,
         filter_min_len=args.min_length,

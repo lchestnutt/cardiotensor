@@ -1,5 +1,4 @@
 import argparse
-import os
 import sys
 import time
 
@@ -8,6 +7,7 @@ from cardiotensor.orientation.orientation_computation_pipeline import (
 )
 from cardiotensor.utils.DataReader import DataReader
 from cardiotensor.utils.utils import read_conf_file
+
 
 def script() -> None:
     """

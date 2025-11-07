@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import List, Optional, Sequence, Union, Mapping
+
 import numpy as np
 
 
 def write_spatialgraph_am(
     out_path: str | Path,
-    streamlines_xyz: List[np.ndarray],
-    point_thickness: Optional[Sequence[np.ndarray] | np.ndarray] = None,
-    edge_scalar: Optional[
-        Union[Sequence[float], np.ndarray, Mapping[str, Union[Sequence[float], np.ndarray]]]
-    ] = None,
-    edge_scalar_name: Optional[str] = None,
+    streamlines_xyz: list[np.ndarray],
+    point_thickness: Sequence[np.ndarray] | np.ndarray | None = None,
+    edge_scalar: Sequence[float]
+    | np.ndarray
+    | Mapping[str, Sequence[float] | np.ndarray]
+    | None = None,
+    edge_scalar_name: str | None = None,
 ) -> None:
     """
     Minimal Amira SpatialGraph writer with optional EDGE scalar blocks.
@@ -60,14 +62,18 @@ def write_spatialgraph_am(
     n_edges = len(streamlines_xyz)
 
     # Build vertices: start and end of each edge
-    vertices = np.vstack([np.vstack((sl[0][None, :], sl[-1][None, :])) for sl in streamlines_xyz])
+    vertices = np.vstack(
+        [np.vstack((sl[0][None, :], sl[-1][None, :])) for sl in streamlines_xyz]
+    )
     n_vertices = vertices.shape[0]
 
     # Connectivity (zero-based)
-    edge_conn = np.column_stack((
-        np.arange(0, 2 * n_edges, 2, dtype=int),
-        np.arange(1, 2 * n_edges, 2, dtype=int),
-    ))
+    edge_conn = np.column_stack(
+        (
+            np.arange(0, 2 * n_edges, 2, dtype=int),
+            np.arange(1, 2 * n_edges, 2, dtype=int),
+        )
+    )
 
     # Concatenate all points
     points_concat = np.concatenate(streamlines_xyz, axis=0).astype(float)
@@ -88,13 +94,19 @@ def write_spatialgraph_am(
             # multiple fields
             for name, vals in edge_scalar.items():
                 field_name = _sanitize_field_name(name, param="edge_scalar (dict key)")
-                arr = _normalize_edge_attribute(vals, n_edges, f"edge_scalar['{field_name}']")
+                arr = _normalize_edge_attribute(
+                    vals, n_edges, f"edge_scalar['{field_name}']"
+                )
                 edge_scalar_blocks.append((field_name, arr))
         else:
             # single field
             if not edge_scalar_name:
-                raise ValueError("edge_scalar_name must be provided for single edge_scalar array")
-            field_name = _sanitize_field_name(edge_scalar_name, param="edge_scalar_name")
+                raise ValueError(
+                    "edge_scalar_name must be provided for single edge_scalar array"
+                )
+            field_name = _sanitize_field_name(
+                edge_scalar_name, param="edge_scalar_name"
+            )
             arr = _normalize_edge_attribute(edge_scalar, n_edges, "edge_scalar")
             edge_scalar_blocks.append((field_name, arr))
 
@@ -181,7 +193,7 @@ def _sanitize_field_name(name: str, param: str) -> str:
         raise ValueError(f"{param} must be a non-empty string")
     name = name.strip()
     # Replace spaces and forbidden chars
-    bad = set(' \t\r\n"\'{}[]()@')
+    bad = set(" \t\r\n\"'{}[]()@")
     if any(ch in bad for ch in name):
         name = "".join(ch if ch not in bad else "_" for ch in name)
     return name
@@ -189,30 +201,36 @@ def _sanitize_field_name(name: str, param: str) -> str:
 
 def _normalize_point_attribute(
     attr: Sequence[np.ndarray] | np.ndarray,
-    num_points_per_edge: List[int],
+    num_points_per_edge: list[int],
     n_points_total: int,
     name: str,
 ) -> np.ndarray:
     if isinstance(attr, np.ndarray):
         flat = attr.astype(float).ravel()
         if flat.shape[0] != n_points_total:
-            raise ValueError(f"{name} length {flat.shape[0]} does not match total points {n_points_total}")
+            raise ValueError(
+                f"{name} length {flat.shape[0]} does not match total points {n_points_total}"
+            )
         return flat
     # list case
     if len(attr) != len(num_points_per_edge):
         raise ValueError(f"{name} list must have one array per streamline")
     for i, (a, n) in enumerate(zip(attr, num_points_per_edge)):
         if len(a) != n:
-            raise ValueError(f"{name}[{i}] length {len(a)} does not match streamline length {n}")
+            raise ValueError(
+                f"{name}[{i}] length {len(a)} does not match streamline length {n}"
+            )
     return np.concatenate([np.asarray(a, dtype=float).ravel() for a in attr], axis=0)
 
 
 def _normalize_edge_attribute(
-    attr: Union[Sequence[float], np.ndarray],
+    attr: Sequence[float] | np.ndarray,
     n_edges: int,
     name: str,
 ) -> np.ndarray:
     arr = np.asarray(attr, dtype=float).ravel()
     if arr.shape[0] != n_edges:
-        raise ValueError(f"{name} length {arr.shape[0]} does not match n_edges {n_edges}")
+        raise ValueError(
+            f"{name} length {arr.shape[0]} does not match n_edges {n_edges}"
+        )
     return arr

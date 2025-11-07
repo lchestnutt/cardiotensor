@@ -1,5 +1,4 @@
 import os
-import sys
 import warnings
 
 import glymur
@@ -7,14 +6,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tifffile
 from scipy.interpolate import CubicSpline
-
 from structure_tensor.multiprocessing import parallel_structure_tensor_analysis
 from tqdm import tqdm
-from typing import Tuple, Optional
 
-from cardiotensor.colormaps.helix_angle import helix_angle_cmap
 from cardiotensor.utils.utils import convert_to_8bit
-
 
 
 def interpolate_points(
@@ -415,7 +410,9 @@ def compute_helix_and_transverse_angles(
     return helix_angle, transverse_angle
 
 
-def compute_azimuth_and_elevation(vector_field_2d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def compute_azimuth_and_elevation(
+    vector_field_2d: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Azimuth = angle in XY plane from +X toward +Y, in degrees [-180, 180]
     Elevation = angle from XY plane toward +Z, in degrees [-90, 90]
@@ -427,8 +424,6 @@ def compute_azimuth_and_elevation(vector_field_2d: np.ndarray) -> tuple[np.ndarr
     az = np.rad2deg(np.arctan2(vy, vx))  # [-180, 180]
     el = np.rad2deg(np.arctan2(vz, np.sqrt(vx * vx + vy * vy)))  # [-90, 90]
     return az, el
-
-
 
 
 # def plot_images(
@@ -505,12 +500,13 @@ def compute_azimuth_and_elevation(vector_field_2d: np.ndarray) -> tuple[np.ndarr
 #     fig.tight_layout()
 #     plt.show()
 
+
 def plot_images(
     img: np.ndarray,
     img_angle1: np.ndarray,
     img_angle2: np.ndarray,
     img_FA: np.ndarray,
-    center_point: Tuple[int, int, int],
+    center_point: tuple[int, int, int],
     colormap_angle=None,
     colormap_FA=None,
     angle1_title: str = "Helix Angle",
@@ -577,10 +573,6 @@ def plot_images(
     plt.show()
 
 
-
-
-
-
 # def write_images(
 #     img_angle1: np.ndarray,
 #     img_angle2: np.ndarray,
@@ -595,7 +587,7 @@ def plot_images(
 #     angle_names: tuple[str, str] = ("HA", "IA"),
 #     angle_ranges: tuple[tuple[float, float], tuple[float, float]] = ((-90, 90), (-90, 90)),
 # ) -> None:
-    
+
 #     # angle_names drives subfolders, angle_ranges drives normalization
 #     name1, name2 = angle_names
 #     (a1_min, a1_max), (a2_min, a2_max) = angle_ranges
@@ -722,7 +714,7 @@ def write_img_rgb(
     out_path: str,
     vmin: float,
     vmax: float,
-    colormap: Optional[object] = None,
+    colormap: object | None = None,
     output_format: str = "jp2",
 ) -> None:
     """
@@ -767,9 +759,6 @@ def write_img_rgb(
         raise ValueError(f"Unsupported output_format {output_format}")
 
 
-
-
-
 def write_images(
     img_angle1: np.ndarray,
     img_angle2: np.ndarray,
@@ -781,8 +770,11 @@ def write_images(
     z: int,
     colormap_angle=None,
     colormap_FA=None,
-    angle_names: Tuple[str, str] = ("HA", "IA"),
-    angle_ranges: Tuple[Tuple[float, float], Tuple[float, float]] = ((-90, 90), (-90, 90)),
+    angle_names: tuple[str, str] = ("HA", "IA"),
+    angle_ranges: tuple[tuple[float, float], tuple[float, float]] = (
+        (-90, 90),
+        (-90, 90),
+    ),
 ) -> None:
     """
     Write per-slice angle1, angle2, and FA images to disk with flexible naming and ranges.

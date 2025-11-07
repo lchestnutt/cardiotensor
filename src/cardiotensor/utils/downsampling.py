@@ -96,9 +96,9 @@ def downsample_vector_volume(
             all_exist = False
             break
     if all_exist:
-        print(f"✅ Downsampled images for eigen_vec already exist. Skipping.")
-        return    
-    
+        print("✅ Downsampled images for eigen_vec already exist. Skipping.")
+        return
+
     # Load dimensions from the first npy in each block
     sample = np.load(npy_list[0])
     _, h, w = sample.shape

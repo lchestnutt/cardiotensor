@@ -1,33 +1,35 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import random
-from typing import List, Optional
 
+import random
+
+import fury
+import matplotlib.pyplot as plt
 import numpy as np
 import vtk
-import fury
-from fury import window, actor
-import matplotlib.pyplot as plt
-
+from fury import actor, window
 
 # ---------------------------
 # small utilities
 # ---------------------------
 
+
 def parse_background_color(color) -> tuple[float, float, float]:
     NAMED = {
         "white": (1.0, 1.0, 1.0),
         "black": (0.0, 0.0, 0.0),
-        "gray":  (0.5, 0.5, 0.5),
+        "gray": (0.5, 0.5, 0.5),
         "lightgray": (0.9, 0.9, 0.9),
-        "red":   (1.0, 0.0, 0.0),
+        "red": (1.0, 0.0, 0.0),
         "green": (0.0, 1.0, 0.0),
-        "blue":  (0.0, 0.0, 1.0),
+        "blue": (0.0, 0.0, 1.0),
     }
     if isinstance(color, str):
         key = color.lower()
         if key not in NAMED:
-            raise ValueError(f"Unknown background color '{color}'. Available: {list(NAMED.keys())}")
+            raise ValueError(
+                f"Unknown background color '{color}'. Available: {list(NAMED.keys())}"
+            )
         return NAMED[key]
     elif isinstance(color, (tuple, list)) and len(color) == 3:
         return tuple(float(c) for c in color)
@@ -39,7 +41,9 @@ def downsample_streamline(streamline: np.ndarray, factor: int = 2) -> np.ndarray
     return streamline if len(streamline) < 3 or factor <= 1 else streamline[::factor]
 
 
-def matplotlib_cmap_to_fury_lut(cmap, value_range=(-1, 1), n_colors=256) -> vtk.vtkLookupTable:
+def matplotlib_cmap_to_fury_lut(
+    cmap, value_range=(-1, 1), n_colors=256
+) -> vtk.vtkLookupTable:
     if isinstance(cmap, str):
         cmap = plt.get_cmap(cmap)
     colors = cmap(np.linspace(0, 1, n_colors))
@@ -53,12 +57,16 @@ def matplotlib_cmap_to_fury_lut(cmap, value_range=(-1, 1), n_colors=256) -> vtk.
     return lut
 
 
-def _split_streamline_by_bounds(sl: np.ndarray, cl: np.ndarray,
-                                x_min, x_max, y_min, y_max, z_min, z_max):
+def _split_streamline_by_bounds(
+    sl: np.ndarray, cl: np.ndarray, x_min, x_max, y_min, y_max, z_min, z_max
+):
     within = (
-        (sl[:, 0] >= x_min) & (sl[:, 0] <= x_max) &
-        (sl[:, 1] >= y_min) & (sl[:, 1] <= y_max) &
-        (sl[:, 2] >= z_min) & (sl[:, 2] <= z_max)
+        (sl[:, 0] >= x_min)
+        & (sl[:, 0] <= x_max)
+        & (sl[:, 1] >= y_min)
+        & (sl[:, 1] <= y_max)
+        & (sl[:, 2] >= z_min)
+        & (sl[:, 2] <= z_max)
     )
     if not np.any(within):
         return [], []
@@ -66,7 +74,7 @@ def _split_streamline_by_bounds(sl: np.ndarray, cl: np.ndarray,
     w = within.astype(np.int8)
     trans = np.diff(np.pad(w, (1, 1), constant_values=0))
     starts = np.where(trans == +1)[0]
-    ends   = np.where(trans == -1)[0]
+    ends = np.where(trans == -1)[0]
 
     segs, cols = [], []
     for s, e in zip(starts, ends):
@@ -82,8 +90,16 @@ def _split_streamline_by_bounds(sl: np.ndarray, cl: np.ndarray,
 # Class-based viewer
 # ===========================
 class StreamlineViewer:
-    def __init__(self, streamlines_xyz, color_values, mode, line_width,
-                 window_size, lut, background_color="black"):
+    def __init__(
+        self,
+        streamlines_xyz,
+        color_values,
+        mode,
+        line_width,
+        window_size,
+        lut,
+        background_color="black",
+    ):
         self.streamlines_xyz = streamlines_xyz
         self.color_values = color_values
         self.mode = mode
@@ -105,7 +121,7 @@ class StreamlineViewer:
         self.clipping_active = False  # Track clipping state
 
         # VTK/FURY objects
-        self.showm: Optional[window.ShowManager] = None
+        self.showm: window.ShowManager | None = None
 
         # clipped branch objects
         self.plane_rep = None
@@ -115,7 +131,9 @@ class StreamlineViewer:
         self.actor0 = None
 
         # precompute flat scalars for LUT mapping
-        self.flat_vals = np.concatenate([np.asarray(c).ravel() for c in self.color_values]).astype(np.float32)
+        self.flat_vals = np.concatenate(
+            [np.asarray(c).ravel() for c in self.color_values]
+        ).astype(np.float32)
         self.vmin = float(np.nanmin(self.flat_vals))
         self.vmax = float(np.nanmax(self.flat_vals))
         self.lut.SetRange(self.vmin, self.vmax)
@@ -138,32 +156,31 @@ class StreamlineViewer:
                 linewidth=self.linewidth,
                 spline_subdiv=0,
                 lookup_colormap=self.lut,
-                lod=False,                 # <—
-                lod_points=20000,         # optional, tune
-                lod_points_size=2         # optional, tune
+                lod=False,  # <—
+                lod_points=20000,  # optional, tune
+                lod_points_size=2,  # optional, tune
             )
         else:
             self.actor0 = actor.line(
                 self.streamlines_xyz,
-                colors=self.flat_vals,            # scalars
+                colors=self.flat_vals,  # scalars
                 linewidth=self.linewidth,
-                lookup_colormap=self.lut
+                lookup_colormap=self.lut,
             )
 
         self.scene.add(self.actor0)
-        
+
         # fast actor for interaction (cheap line rendering)
         self.actor_fast = actor.line(
             self.streamlines_xyz,
-            colors=self.flat_vals,          # pass scalars
-            linewidth=1.0,                  # very light
+            colors=self.flat_vals,  # pass scalars
+            linewidth=1.0,  # very light
             lookup_colormap=self.lut,
-            lod=False,                      # make it deterministic
-            fake_tube=True,                 # a bit of shading to hint tubes
+            lod=False,  # make it deterministic
+            fake_tube=True,  # a bit of shading to hint tubes
         )
         self.actor_fast.SetVisibility(False)
         self.scene.add(self.actor_fast)
-                
 
         # clipping plane setup, start disabled
         self.plane_rep = vtk.vtkImplicitPlaneRepresentation()
@@ -184,7 +201,9 @@ class StreamlineViewer:
         self.mapper0.RemoveAllClippingPlanes()  # start with clipping off
 
     def _add_scalar_bar(self):
-        self.scene.add(fury.actor.scalar_bar(lookup_table=self.lut, title="Angle (deg)"))
+        self.scene.add(
+            fury.actor.scalar_bar(lookup_table=self.lut, title="Angle (deg)")
+        )
 
     def _render_now(self):
         try:
@@ -193,7 +212,7 @@ class StreamlineViewer:
             pass
         if self.showm is not None:
             self.showm.render()
-        
+
     def _sync_plane_from_widget(self, *_):
         origin = [0.0, 0.0, 0.0]
         normal = [1.0, 0.0, 0.0]
@@ -201,8 +220,6 @@ class StreamlineViewer:
         self.plane_rep.GetNormal(normal)
         self.plane_fn.SetOrigin(origin)
         self.plane_fn.SetNormal(normal)
-        
-
 
     def _add_scale_bar(self):
         self.scale_bar = vtk.vtkLegendScaleActor()
@@ -236,7 +253,11 @@ class StreamlineViewer:
         self._render_now()
 
     def _rebuild_unclipped_actor(self):
-        clipping_on = self.mapper0.GetNumberOfClippingPlanes() > 0 if self.mapper0 is not None else False
+        clipping_on = (
+            self.mapper0.GetNumberOfClippingPlanes() > 0
+            if self.mapper0 is not None
+            else False
+        )
 
         if self.actor0 is not None:
             try:
@@ -251,16 +272,16 @@ class StreamlineViewer:
                 linewidth=self.linewidth,
                 spline_subdiv=0,
                 lookup_colormap=self.lut,
-                lod=False,                 # <—
-                lod_points=20000,         # optional, tune
-                lod_points_size=2         # optional, tune
+                lod=False,  # <—
+                lod_points=20000,  # optional, tune
+                lod_points_size=2,  # optional, tune
             )
         else:
             self.actor0 = actor.line(
                 self.streamlines_xyz,
                 colors=self.flat_vals,
                 linewidth=self.linewidth,
-                lookup_colormap=self.lut
+                lookup_colormap=self.lut,
             )
 
         self.scene.add(self.actor0)
@@ -275,10 +296,10 @@ class StreamlineViewer:
     def _on_keypress(self, obj, evt):
         key = obj.GetKeySym().lower()
 
-        if key == 'o':
-           self._toggle_clipping()
+        if key == "o":
+            self._toggle_clipping()
 
-        elif key == 'h':
+        elif key == "h":
             if self.plane_widget:
                 currently_on = self.plane_widget.GetEnabled()
                 if currently_on:
@@ -289,19 +310,23 @@ class StreamlineViewer:
                     print("Plane gizmo shown")
                 self._render_now()
 
-        elif key == 'i':
+        elif key == "i":
             n = [0.0, 0.0, 0.0]
             self.plane_rep.GetNormal(n)
             self.plane_rep.SetNormal(-n[0], -n[1], -n[2])
             self._sync_plane_from_widget()
 
-        elif key == 'b':
-            self.current_bg = (0.0, 0.0, 0.0) if self.current_bg == (1.0, 1.0, 1.0) else (1.0, 1.0, 1.0)
+        elif key == "b":
+            self.current_bg = (
+                (0.0, 0.0, 0.0)
+                if self.current_bg == (1.0, 1.0, 1.0)
+                else (1.0, 1.0, 1.0)
+            )
             self.scene.SetBackground(*self.current_bg)
             self._render_now()
             print(f"Background set to {self.current_bg}")
 
-        elif key == 's':
+        elif key == "s":
             if self.scale_bar is None:
                 self._add_scale_bar()
             else:
@@ -315,8 +340,10 @@ class StreamlineViewer:
                     print("Scale bar ON")
             self._render_now()
 
-        elif key == 'p':
-            import datetime, os
+        elif key == "p":
+            import datetime
+            import os
+
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             out_path = os.path.abspath(f"view_{ts}_hires.png")
             try:
@@ -327,48 +354,49 @@ class StreamlineViewer:
                     size=highres_size,
                     reset_camera=False,
                 )
-                print(f"Saved high-resolution screenshot to {out_path} ({highres_size[0]}x{highres_size[1]})")
+                print(
+                    f"Saved high-resolution screenshot to {out_path} ({highres_size[0]}x{highres_size[1]})"
+                )
             except Exception as e:
                 print(f"Failed to save screenshot: {e}")
 
-        elif key == 'r':
+        elif key == "r":
             self.plane_rep.SetOrigin(*self.center)
             self.plane_rep.SetNormal(1, 0, 0)
             self.plane_rep.UpdatePlacement()
             self._sync_plane_from_widget()
             print("Cropping plane reset to center, normal +X")
 
-        elif key in ('plus', 'equal', 'kp_add'):
+        elif key in ("plus", "equal", "kp_add"):
             self.linewidth = min(1000.0, self.linewidth * 1.25)
-            if self.mode == 'tube':
+            if self.mode == "tube":
                 self._rebuild_unclipped_actor()
             else:
                 self.actor0.GetProperty().SetLineWidth(self.linewidth)
             self._render_now()
             print(f"Thickness up, lw={self.linewidth:.2f}")
 
-        elif key in ('minus', 'kp_subtract', 'underscore'):
+        elif key in ("minus", "kp_subtract", "underscore"):
             self.linewidth = max(1.0, self.linewidth * 0.8)
-            if self.mode == 'tube':
+            if self.mode == "tube":
                 self._rebuild_unclipped_actor()
             else:
                 self.actor0.GetProperty().SetLineWidth(self.linewidth)
             self._render_now()
             print(f"Thickness down, lw={self.linewidth:.2f}")
 
-
-
-    
     def _lod_on(self, obj=None, evt=None):
         """Activate low-res actor for interaction, and apply clipping only if it was previously enabled."""
         try:
             # Hide the full-res actor and show the low-res actor
-            self.actor0.SetVisibility(False)  
+            self.actor0.SetVisibility(False)
             self.actor_fast.SetVisibility(True)
 
             # Apply clipping only if it was previously enabled
             if self.clipping_active:
-                self.actor_fast.GetMapper().AddClippingPlane(self.plane_fn)  # Apply clipping to the fast actor
+                self.actor_fast.GetMapper().AddClippingPlane(
+                    self.plane_fn
+                )  # Apply clipping to the fast actor
         except Exception:
             pass
         self._render_now()
@@ -384,18 +412,21 @@ class StreamlineViewer:
 
             # Apply clipping to the full-res actor if it was previously enabled
             if self.clipping_active:
-                self.actor0.GetMapper().AddClippingPlane(self.plane_fn)  # Reapply clipping
+                self.actor0.GetMapper().AddClippingPlane(
+                    self.plane_fn
+                )  # Reapply clipping
         except Exception:
             pass
         self._render_now()
 
-
     # ---------------------------
     # main entry
     # ---------------------------
-    def run(self, interactive: bool, screenshot_path: Optional[str]):
+    def run(self, interactive: bool, screenshot_path: str | None):
         if interactive:
-            self.showm = window.ShowManager(scene=self.scene, size=self.window_size, reset_camera=False)
+            self.showm = window.ShowManager(
+                scene=self.scene, size=self.window_size, reset_camera=False
+            )
             self.showm.initialize()
 
             iren = self.showm.iren
@@ -405,7 +436,7 @@ class StreamlineViewer:
             # ensure anti-alias looks good when idle
             try:
                 self.showm.renwin.SetMultiSamples(0)
-                self.scene.enable_anti_aliasing('fxaa')
+                self.scene.enable_anti_aliasing("fxaa")
             except Exception:
                 pass
 
@@ -413,26 +444,35 @@ class StreamlineViewer:
             iren.AddObserver(vtk.vtkCommand.StartInteractionEvent, self._lod_on)
             iren.AddObserver(vtk.vtkCommand.EndInteractionEvent, self._lod_off)
 
-
             self.plane_widget = vtk.vtkImplicitPlaneWidget2()
             self.plane_widget.SetRepresentation(self.plane_rep)
             self.plane_widget.SetInteractor(self.showm.iren)
             self.plane_widget.EnabledOff()  # start with gizmo deactivated
 
-            self.plane_widget.AddObserver(vtk.vtkCommand.StartInteractionEvent, self._sync_plane_from_widget)
-            self.plane_widget.AddObserver(vtk.vtkCommand.InteractionEvent,      self._sync_plane_from_widget)
-            self.plane_widget.AddObserver(vtk.vtkCommand.EndInteractionEvent,   self._sync_plane_from_widget)
+            self.plane_widget.AddObserver(
+                vtk.vtkCommand.StartInteractionEvent, self._sync_plane_from_widget
+            )
+            self.plane_widget.AddObserver(
+                vtk.vtkCommand.InteractionEvent, self._sync_plane_from_widget
+            )
+            self.plane_widget.AddObserver(
+                vtk.vtkCommand.EndInteractionEvent, self._sync_plane_from_widget
+            )
 
-            self.showm.iren.AddObserver('KeyPressEvent', self._on_keypress)
+            self.showm.iren.AddObserver("KeyPressEvent", self._on_keypress)
 
             self.scene.reset_camera()
-            print("Keys: O toggle plane, H hide gizmo, I flip side, R reset plane, +/- thickness, B background, S scale bar, P save PNG")
+            print(
+                "Keys: O toggle plane, H hide gizmo, I flip side, R reset plane, +/- thickness, B background, S scale bar, P save PNG"
+            )
             self.showm.start()
         else:
             if not screenshot_path:
                 raise ValueError("Must specify screenshot_path when interactive=False.")
             self.scene.reset_camera()
-            fury.window.record(scene=self.scene, out_path=screenshot_path, size=self.window_size)
+            fury.window.record(
+                scene=self.scene, out_path=screenshot_path, size=self.window_size
+            )
 
 
 # ===========================
@@ -450,7 +490,8 @@ def show_streamlines(
     max_streamlines: int | None = None,
     filter_min_len: int | None = None,
     subsample_factor: int = 1,
-    crop_bounds: tuple[tuple[float, float], tuple[float, float], tuple[float, float]] | None = None,
+    crop_bounds: tuple[tuple[float, float], tuple[float, float], tuple[float, float]]
+    | None = None,
     colormap=None,
     background_color: str | tuple[float, float, float] = "black",
 ):
@@ -461,7 +502,9 @@ def show_streamlines(
         print(f"Cropping streamlines within bounds: {crop_bounds}")
         new_streamlines, new_colors = [], []
         for sl, cl in zip(streamlines_xyz, color_values):
-            segs, cols = _split_streamline_by_bounds(sl, cl, x_min, x_max, y_min, y_max, z_min, z_max)
+            segs, cols = _split_streamline_by_bounds(
+                sl, cl, x_min, x_max, y_min, y_max, z_min, z_max
+            )
             if segs:
                 new_streamlines.extend(segs)
                 new_colors.extend(cols)
@@ -491,21 +534,25 @@ def show_streamlines(
     if subsample_factor > 1:
         print(f"Subsampling: keeping 1 in every {subsample_factor} streamlines")
         total = len(streamlines_xyz)
-        keep_idx = sorted(random.sample(range(total), max(1, total // subsample_factor)))
+        keep_idx = sorted(
+            random.sample(range(total), max(1, total // subsample_factor))
+        )
         streamlines_xyz = [streamlines_xyz[i] for i in keep_idx]
-        color_values    = [color_values[i]    for i in keep_idx]
+        color_values = [color_values[i] for i in keep_idx]
 
     if max_streamlines is not None and len(streamlines_xyz) > max_streamlines:
         print(f"Limiting to max {max_streamlines} streamlines")
         keep_idx = sorted(random.sample(range(len(streamlines_xyz)), max_streamlines))
         streamlines_xyz = [streamlines_xyz[i] for i in keep_idx]
-        color_values    = [color_values[i]    for i in keep_idx]
+        color_values = [color_values[i] for i in keep_idx]
 
     print(f"Final number of streamlines to render: {len(streamlines_xyz)}")
     if not color_values:
         raise ValueError("No color arrays after filtering.")
 
-    flat_colors = np.concatenate([np.asarray(c).ravel() for c in color_values]).astype(np.float32)
+    flat_colors = np.concatenate([np.asarray(c).ravel() for c in color_values]).astype(
+        np.float32
+    )
     min_val = float(np.nanmin(flat_colors))
     max_val = float(np.nanmax(flat_colors))
     print(f"Coloring range: min={min_val:.3f}, max={max_val:.3f}")
@@ -518,10 +565,20 @@ def show_streamlines(
             saturation_range=(0.5, 1.0),
         )
     else:
-        lut = matplotlib_cmap_to_fury_lut(cmap=colormap, value_range=(min_val, max_val), n_colors=256)
+        lut = matplotlib_cmap_to_fury_lut(
+            cmap=colormap, value_range=(min_val, max_val), n_colors=256
+        )
     lut.SetRange(min_val, max_val)
 
-    viewer = StreamlineViewer(streamlines_xyz, color_values, mode, line_width, window_size, lut, background_color=background_color)
+    viewer = StreamlineViewer(
+        streamlines_xyz,
+        color_values,
+        mode,
+        line_width,
+        window_size,
+        lut,
+        background_color=background_color,
+    )
     viewer.run(interactive=interactive, screenshot_path=screenshot_path)
 
 
@@ -532,7 +589,7 @@ if __name__ == "__main__":
     rng = np.random.default_rng(0)
     sls, cols = [], []
     for k in range(50):
-        t = np.linspace(0, 2*np.pi, 150)
+        t = np.linspace(0, 2 * np.pi, 150)
         r = 20 + 2 * rng.normal()
         x = r * np.cos(t) + 5 * rng.normal()
         y = r * np.sin(t) + 5 * rng.normal()

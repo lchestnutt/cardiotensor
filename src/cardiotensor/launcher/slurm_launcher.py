@@ -126,8 +126,9 @@ cardio-tensor {conf_file_path} --start_index $START_INDEX --end_index $END_INDEX
         sys.exit()
 
 
-
-def slurm_launcher(conf_file_path: str, start_index: int = 0, end_index: int | None = None) -> None:
+def slurm_launcher(
+    conf_file_path: str, start_index: int = 0, end_index: int | None = None
+) -> None:
     """
     Launch Slurm array jobs for a subset [start_index, end_index] (inclusive) of the volume.
     If end_index is None, the last slice of the volume is used.
@@ -162,16 +163,23 @@ def slurm_launcher(conf_file_path: str, start_index: int = 0, end_index: int | N
     last = max(0, min(last, total_slices - 1))
 
     if last < first:
-        print(f"⚠️ Invalid range: start_index ({first}) > end_index ({last})", flush=True)
+        print(
+            f"⚠️ Invalid range: start_index ({first}) > end_index ({last})", flush=True
+        )
         sys.exit(1)
 
     window_len = last - first + 1
-    print(f"Processing slice window [{first}, {last}] (len={window_len}) out of 0..{total_slices-1}", flush=True)
+    print(
+        f"Processing slice window [{first}, {last}] (len={window_len}) out of 0..{total_slices - 1}",
+        flush=True,
+    )
 
     mem_needed = 128
 
     # ----- build per-job intervals (inclusive) -----
-    def build_intervals(first_idx: int, last_idx: int, step: int) -> list[tuple[int, int]]:
+    def build_intervals(
+        first_idx: int, last_idx: int, step: int
+    ) -> list[tuple[int, int]]:
         out = []
         s = first_idx
         while s <= last_idx:
@@ -182,11 +190,17 @@ def slurm_launcher(conf_file_path: str, start_index: int = 0, end_index: int | N
 
     intervals = build_intervals(first, last, N_CHUNK)
     n_jobs_total = len(intervals)
-    print(f"Splitting data into {n_jobs_total} jobs of up to {N_CHUNK} slices each", flush=True)
+    print(
+        f"Splitting data into {n_jobs_total} jobs of up to {N_CHUNK} slices each",
+        flush=True,
+    )
 
     # ----- batch into arrays of <= 999 tasks -----
     N_job_max_per_array = 999
-    batched = [intervals[i:i + N_job_max_per_array] for i in range(0, n_jobs_total, N_job_max_per_array)]
+    batched = [
+        intervals[i : i + N_job_max_per_array]
+        for i in range(0, n_jobs_total, N_job_max_per_array)
+    ]
     print(
         f"Launching {len(batched)} arrays (tasks per array: {[len(b) for b in batched]})",
         flush=True,
@@ -233,7 +247,9 @@ def monitor_job_output(
         print(f"{processed}/{total_images} processed", flush=True)
 
         if current_files_count > tmp_count:
-            rate = current_files_count - tmp_count  # images per minute (since we sleep 60s)
+            rate = (
+                current_files_count - tmp_count
+            )  # images per minute (since we sleep 60s)
             remaining = max(total_images - processed, 0)
             eta_min = remaining / rate if rate > 0 else float("inf")
             print(
