@@ -546,11 +546,11 @@ def plot_images(
     if colormap_FA is None:
         colormap_FA = plt.cm.magma
 
-    yx = (int(center_point[1]), int(center_point[2]))
-
+    x, y = center_point[0:2]
+    
     fig, ax = plt.subplots(2, 2, figsize=(10, 9))
     ax[0, 0].imshow(img, cmap="gray")
-    ax[0, 0].plot([yx[1]], [yx[0]], "r.", ms=6)
+    ax[0, 0].plot(x, y, "r.", ms=6)
     ax[0, 0].set_title("Source")
     ax[0, 0].axis("off")
 
