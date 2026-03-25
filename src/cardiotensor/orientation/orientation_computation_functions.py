@@ -8,10 +8,14 @@ import tifffile
 from scipy.interpolate import CubicSpline
 from structure_tensor.multiprocessing import parallel_structure_tensor_analysis
 from tqdm import tqdm
+from scipy.ndimage import uniform_filter
 
 from cardiotensor.utils.utils import convert_to_8bit
 
 from cardiotensor.colormaps.helix_angle import helix_angle_cmap
+from concurrent.futures import ProcessPoolExecutor
+
+from .multiprocessing_MDI import parallel_mdi_analysis
 
 
 def interpolate_points(
@@ -275,6 +279,145 @@ def remove_padding(
     val = val[:, padding_start:array_end, :, :]
 
     return volume, val, vec
+
+
+def calculate_MDI_parallel(
+    volume: np.ndarray,
+    window_size: float = 9,
+    devices: list[str] | None = None,
+    block_size: int = 200,
+    use_gpu: bool = False
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Calculates the structure tensor of a volume.
+
+    Args:
+        volume (np.ndarray): The tertiary eigenvector field, shape (3, z, y, x).
+        window size (int, odd value): neighbourhood to consider in MDI calculation.
+        devices (Optional[list[str]]): List of devices for parallel processing (e.g., ['cpu', 'cuda:0']).
+        block_size (int): Size of the blocks for processing. Default is 200.
+        use_gpu (bool): Whether to use GPU for calculation.
+
+    Returns:
+        np.ndarray: MDI field shape (z, y, x).
+    """
+    # Filter or ignore specific warnings
+    warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+    num_cpus = max(os.cpu_count() or 4, 4
+    )  # Default to 4 if os.cpu_count() returns None
+
+    devices = devices or []
+    num_gpus = 0
+
+    if use_gpu:
+        print("🔍 Checking for GPU support...")
+        try:
+            num_gpus = get_gpu_count()
+            print(f"Detected {num_gpus} GPU(s)")
+        except Exception as e:
+            use_gpu = False
+            print(
+                f"⚠️ GPU not available or failed to initialize. Using CPU. Reason: {e}"
+            )
+
+    if not devices:
+        if use_gpu and num_gpus > 0:
+            print(f"Using {num_gpus} GPUs for computation")
+            devices = []
+            for i in range(num_gpus):
+                devices.extend([f"cuda:{i}"] * 16)
+        else:
+            print(f"Using {num_cpus} CPU for computation")
+            devices = ["cpu"] * num_cpus
+
+    print("\nStarting MDI computation...")
+    print(f"---  Volume shape: {volume.shape}")
+    print(f"---  Window Size: {window_size}, Block size: {block_size}")
+
+    if use_gpu and num_gpus > 0:
+        device_str = f"{num_gpus} GPU{'s' if num_gpus > 1 else ''}"
+    else:
+        device_str = f"{num_cpus} CPU{'s' if num_cpus > 1 else ''}"
+    print(f"---  Devices: {device_str}")
+
+    class TqdmTotal(tqdm):
+        def update_with_total(self, n=1, total=None):
+            if total is not None:
+                self.total = total
+            return self.update(1)
+
+    with TqdmTotal(desc="Computing MDI", unit="block") as t:
+        MDI = parallel_mdi_analysis(
+            volume,
+            window_size=window_size,
+            devices=devices,
+            block_size=block_size,
+            progress_callback_fn=t.update_with_total,
+        )
+
+    print("MDI computation completed\n")
+
+    return MDI
+
+
+def compute_MDI_from_v(v3: np.ndarray, window_size: int = 9) -> np.ndarray:
+    """
+    Compute 3D MDI map from tertiary eigenvector field.
+
+    Args:
+        v3: (3, z, y, x) 3D vector field
+        window_size: odd integer
+
+    Returns:
+        mdi_map: (z, y, x)
+    """
+
+    vx, vy, vz = v3
+
+    # --- Normalize ---
+    norm = np.sqrt(vx**2 + vy**2 + vz**2)
+    mask = norm > 0
+
+    vx = np.where(mask, vx / norm, 0)
+    vy = np.where(mask, vy / norm, 0)
+    vz = np.where(mask, vz / norm, 0)
+
+    # --- Tensor components  - local averages ---
+    Sxx = uniform_filter(vx * vx, size=window_size)
+    Syy = uniform_filter(vy * vy, size=window_size)
+    Szz = uniform_filter(vz * vz, size=window_size)
+
+    Sxy = uniform_filter(vx * vy, size=window_size)
+    Sxz = uniform_filter(vx * vz, size=window_size)
+    Syz = uniform_filter(vy * vz, size=window_size)
+
+    # --- Stack tensor ---
+    S = np.stack([
+        np.stack([Sxx, Sxy, Sxz], axis=-1),
+        np.stack([Sxy, Syy, Syz], axis=-1),
+        np.stack([Sxz, Syz, Szz], axis=-1)
+    ], axis=-2)  # shape: (z, y, x, 3, 3)
+
+    # --- Eigenvalues ---
+    eigvals = np.linalg.eigvalsh(S)[..., ::-1]
+
+    lambda1 = eigvals[..., 0]
+    lambda2 = eigvals[..., 1]
+    lambda3 = eigvals[..., 2]
+
+    lambda0 = (lambda1 + lambda2 + lambda3) / 3
+
+    # --- MDI ---
+    mdi = np.sqrt(
+        (lambda1 - lambda0)**2 +
+        (lambda2 - lambda0)**2 +
+        (lambda3 - lambda0)**2
+    ) / (np.sqrt(6) * lambda0)
+
+    mdi[lambda0 == 0] = 0
+
+    return mdi
 
 
 def compute_fraction_anisotropy(eigenvalues_2d: np.ndarray) -> np.ndarray:
@@ -614,17 +757,20 @@ def write_images(
     The function creates subdirectories and writes files named like:
     {output_dir}/{name}/{name}_{index:06d}.{ext} and {output_dir}/FA/FA_{index:06d}.{ext}
     """
+
     name1, name2 = angle_names
     (a1_min, a1_max), (a2_min, a2_max) = angle_ranges
-    idx = start_index + z
+    idx = int(start_index + z)
 
     os.makedirs(f"{output_dir}/{name1}", exist_ok=True)
     os.makedirs(f"{output_dir}/{name2}", exist_ok=True)
     os.makedirs(f"{output_dir}/FA", exist_ok=True)
+    
 
     out1 = f"{output_dir}/{name1}/{name1}_{idx:06d}.{output_format}"
     out2 = f"{output_dir}/{name2}/{name2}_{idx:06d}.{output_format}"
     outF = f"{output_dir}/FA/FA_{idx:06d}.{output_format}"
+    
 
     if output_type == "8bit":
         img1_8 = convert_to_8bit(img_angle1, min_value=a1_min, max_value=a1_max)
@@ -681,3 +827,74 @@ def write_vector_field(
         vector_field_slice,
     )
     # print(f"Vector field slice saved at index {slice_idx}")
+
+def write_MDI_images(
+    img_MDI: np.ndarray,
+    start_index: int,
+    output_dir: str,
+    output_format: str,
+    output_type: str,
+    z: int,
+    colormap_MDI=None
+) -> None:
+    """
+    Write per-slice MDI images to disk with flexible naming and ranges.
+
+    Parameters
+    ----------
+    img_MDI : np.ndarray
+        2D float array for MDI in [0, 1].
+    start_index : int
+        Global starting index for z numbering in filenames.
+    output_dir : str
+        Base output directory. Subfolders angle_names[0], angle_names[1], and FA are created.
+    output_format : {"jp2", "tif"}
+        Output file format. Uses glymur for jp2 and tifffile for tif.
+    output_type : {"8bit", "rgb"}
+        Write mode. "8bit" writes single channel uint8, "rgb" writes colormapped RGB.
+    z : int
+        Current z offset used to compute the running index in filenames.
+    colormap_MDI : matplotlib colormap, optional
+        Colormap for MDI in "rgb" mode. Defaults to plt.cm.magma if None.
+
+    Raises
+    ------
+    RuntimeError
+        If required IO backends are missing for the chosen format.
+    ValueError
+        If output_format or output_type is unsupported.
+
+    Notes
+    -----
+    The function creates subdirectories and writes files named like:
+    {output_dir}/{name}/{name}_{index:06d}.{ext} and {output_dir}/FA/FA_{index:06d}.{ext}
+    """
+
+    idx = start_index + z
+
+    os.makedirs(f"{output_dir}/MDI", exist_ok=True)
+    
+    outM = f"{output_dir}/MDI/MDI_{idx:06d}.{output_format}"
+    
+    if output_type == "8bit":
+        imgM_8 = convert_to_8bit(img_MDI, min_value=0.0, max_value=1.0)
+
+        if output_format == "jp2":
+            if glymur is None:
+                raise RuntimeError("glymur is not available for JP2 writing")
+            glymur.Jp2k(outM, data=imgM_8, cratios=[10], numres=8, irreversible=True)
+        elif output_format == "tif":
+            if tifffile is None:
+                raise RuntimeError("tifffile is not available for TIFF writing")
+            tifffile.imwrite(outM, imgM_8)
+        else:
+            raise ValueError(f"I do not recognise output_format {output_format}")
+
+    elif output_type == "rgb":
+        if colormap_MDI is None:
+            colormap_MDI = plt.cm.magma
+
+        write_img_rgb(img_MDI, outM, 0.0, 1.0, colormap_MDI, output_format)
+
+    else:
+        raise ValueError(f"I do not recognise output_type {output_type}")

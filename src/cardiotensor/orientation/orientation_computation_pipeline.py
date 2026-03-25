@@ -18,12 +18,15 @@ from cardiotensor.orientation.orientation_computation_functions import (
     compute_azimuth_and_elevation,
     compute_fraction_anisotropy,
     compute_helix_and_transverse_angles,
+    compute_MDI_from_v,
+    calculate_MDI_parallel,
     interpolate_points,
     plot_images,
     remove_padding,
     rotate_vectors_to_new_axis,
     write_images,
     write_vector_field,
+    write_MDI_images
 )
 from cardiotensor.utils.DataReader import DataReader
 from cardiotensor.utils.utils import remove_corrupted_files
@@ -54,6 +57,7 @@ def check_already_processed(
     end_index: int,
     write_vectors: bool,
     write_angles: bool,
+    write_MDI: bool,
     output_format: str,
     angle_names: tuple[str, str] = ("HA", "IA"),
     fa_name: str = "FA",
@@ -74,6 +78,8 @@ def check_already_processed(
         If True, expect eigenvector .npy files (e.g., eigen_vec_{idx:06d}.npy).
     write_angles : bool
         If True, expect angle images for angle_names[0], angle_names[1], and FA.
+    write_MDI : bool
+        If True, expect images for MDI.
     output_format : str
         Image format/extension for angles, for example "jp2" or "tif".
     angle_names : tuple[str, str], optional
@@ -120,6 +126,11 @@ def check_already_processed(
             expected_files.append(
                 os.path.join(output_dir, "eigen_vec", f"eigen_vec_{idx:06d}.npy")
             )
+        
+        if write_MDI:
+            expected_files.append(
+                os.path.join(output_dir, "MDI", f"MDI_{idx:06d}.{ext}")
+            )
 
         # User-specified extras, if any
         for tmpl in extra_expected:
@@ -157,6 +168,7 @@ def compute_orientation(
     start_index: int = 0,
     end_index: int | None = None,
     colormap: str | None = None,
+    write_MDI: bool = False
 ) -> None:
     """
     Compute the orientation for a volume dataset.
@@ -232,6 +244,7 @@ Parameters:
             end_index,
             write_vectors,
             write_angles,
+            write_MDI,
             output_format,
             angle_names=angle_names,
         )
@@ -321,8 +334,25 @@ Parameters:
 
         del mask
 
+    if write_MDI: 
+        print("\n" + "-" * 40)
+        print("MDI")
+        print("-" * 40 + "\n")
+        print("Calculating myocardial disarray index...")
+        #MDI_vol = compute_MDI_from_v(vec, window_size = int(rho*4 + 1))
+        MDI_vol = calculate_MDI_parallel(vec, window_size = int(rho*4 + 1))
+        if sys.platform.startswith("win"):
+            num_procs = min(mp.cpu_count(), 59)
+        else:
+            num_procs = mp.cpu_count()
+        #MDI_vol = compute_MDI_parallel(vec, window_size = int(rho*4 + 1), block_size= int(rho*4),num_workers = num_procs)
+        print("MDI computation complete")
+        MDI_vol, _, _ = remove_padding(MDI_vol, val, vec, padding_start, padding_end)
+        print(f"MDI shape after removing padding: {MDI_vol.shape}")
+        
+    
     volume, val, vec = remove_padding(volume, val, vec, padding_start, padding_end)
-    print(f"Vector shape after removing padding: {vec.shape}")
+    print(f"ST Vector shape after removing padding: {vec.shape}")
 
     center_line = center_line[start_index_padded:end_index_padded]
 
@@ -335,7 +365,11 @@ Parameters:
     # vec[:, negative_z] *= -1
 
     t2 = time.perf_counter()  # stop time
-    print(f"finished calculating structure tensors in {t2 - t1} seconds")
+    if write_MDI: 
+        print(f"finished calculating structure tensors and MDI in {t2 - t1} seconds")
+    else:
+        print(f"finished calculating structure tensors in {t2 - t1} seconds")
+    
 
     print("\n" + "-" * 40)
     print("ANGLE & ANISOTROPY CALCULATION")
@@ -376,6 +410,8 @@ Parameters:
                             start_index,
                             write_vectors,
                             write_angles,
+                            write_MDI,
+                            MDI_vol[z, :, :] if write_MDI else None,
                             is_test,
                             angle_mode,
                             colormap,
@@ -406,6 +442,8 @@ Parameters:
                     start_index,
                     write_vectors,
                     write_angles,
+                    write_MDI,
+                    MDI_vol[z, :, :] if write_MDI else None,
                     is_test,
                     angle_mode,
                     colormap,
@@ -431,6 +469,8 @@ def compute_slice_angles_and_anisotropy(
     start_index: int = 0,
     write_vectors: bool = False,
     write_angles: bool = True,
+    write_MDI: bool = False,
+    MDI_slice: np.ndarray = None,
     is_test: bool = False,
     angle_mode: str = "ha_ia",
     colormap: str | None = None,
@@ -467,6 +507,11 @@ def compute_slice_angles_and_anisotropy(
         expected_paths.append(
             os.path.join(output_dir, "eigen_vec", f"eigen_vec_{idx:06d}.npy")
         )
+    
+    if write_MDI:
+        expected_paths.append(
+            os.path.join(output_dir, "MDI", f"MDI_{idx:06d}.npy")
+        )
 
     # Skip if all outputs are already present and we are not in test mode
     if (
@@ -502,6 +547,9 @@ def compute_slice_angles_and_anisotropy(
             img_angle1, img_angle2 = compute_azimuth_and_elevation(
                 vector_field_slice_rotated
             )
+    
+    if write_MDI: 
+        img_MDI = MDI_slice
 
     # Test mode: visualize a 2x2 figure and write to test subfolder
     if is_test:
@@ -533,6 +581,15 @@ def compute_slice_angles_and_anisotropy(
             angle_names=angle_names,
             angle_ranges=angle_ranges,
         )
+        if write_MDI:
+            write_MDI_images(
+                img_MDI,
+                start_index,
+                os.path.join(output_dir, "test_slice"),
+                ext,
+                output_type,
+                z
+            )
         return
 
     # Persist outputs
@@ -552,3 +609,11 @@ def compute_slice_angles_and_anisotropy(
         )
     if write_vectors:
         write_vector_field(vector_field_slice, start_index, output_dir, z)
+
+    if write_MDI:
+        write_MDI_images(img_MDI,
+            start_index,
+            output_dir,
+            ext,
+            output_type,
+            z)
