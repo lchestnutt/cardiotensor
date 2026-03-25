@@ -317,7 +317,7 @@ Parameters:
         print("-" * 40 + "\n")
         print("Calculating myocardial disarray index...")
         #MDI_vol = compute_MDI_from_v(vec, window_size = int(rho*4 + 1))
-        MDI_vol = calculate_MDI_parallel(vec, window_size = int(rho*2 + 1))
+        MDI_vol = calculate_MDI_parallel(vec, window_size = int(rho*4 + 1))
         if sys.platform.startswith("win"):
             num_procs = min(mp.cpu_count(), 59)
         else:

@@ -303,8 +303,7 @@ def calculate_MDI_parallel(
     # Filter or ignore specific warnings
     warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-    num_cpus = max(
-        os.cpu_count() or 4, 4
+    num_cpus = max(os.cpu_count() or 4, 4
     )  # Default to 4 if os.cpu_count() returns None
 
     devices = devices or []

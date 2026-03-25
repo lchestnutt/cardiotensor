@@ -85,6 +85,39 @@ def _init_worker(init_args: _InitArgs):
 # Core MDI computation (block-level)
 # -----------------------------------------------------------------------------
 
+def eigvals_symm3(Sxx, Syy, Szz, Sxy, Sxz, Syz):
+    # Trace
+    m = (Sxx + Syy + Szz) / 3.0
+
+    # Centered matrix elements
+    Bxx = Sxx - m
+    Byy = Syy - m
+    Bzz = Szz - m
+
+    p = np.sqrt(
+        (Bxx**2 + Byy**2 + Bzz**2 +
+         2*(Sxy**2 + Sxz**2 + Syz**2)) / 6.0
+    )
+
+    # Determinant of normalized matrix
+    detB = (
+        Bxx*(Byy*Bzz - Syz*Syz)
+        - Sxy*(Sxy*Bzz - Syz*Sxz)
+        + Sxz*(Sxy*Syz - Byy*Sxz)
+    )
+
+    r = detB / (2 * p**3 + 1e-12)
+    r = np.clip(r, -1, 1)
+
+    phi = np.arccos(r) / 3.0
+
+    eig1 = m + 2*p*np.cos(phi)
+    eig3 = m + 2*p*np.cos(phi + 2*np.pi/3)
+    eig2 = 3*m - eig1 - eig3
+
+    return eig1, eig2, eig3
+
+
 def _compute_mdi_block(block: np.ndarray, window_size: int):
 
     vx, vy, vz = block
@@ -96,13 +129,13 @@ def _compute_mdi_block(block: np.ndarray, window_size: int):
     vy = np.where(mask, vy / norm, 0)
     vz = np.where(mask, vz / norm, 0)
 
-    Sxx = uniform_filter(vx * vx, size=window_size)
-    Syy = uniform_filter(vy * vy, size=window_size)
-    Szz = uniform_filter(vz * vz, size=window_size)
+    Sxx = uniform_filter(vx * vx, size=window_size, mode='nearest')
+    Syy = uniform_filter(vy * vy, size=window_size, mode='nearest')
+    Szz = uniform_filter(vz * vz, size=window_size, mode='nearest')
 
-    Sxy = uniform_filter(vx * vy, size=window_size)
-    Sxz = uniform_filter(vx * vz, size=window_size)
-    Syz = uniform_filter(vy * vz, size=window_size)
+    Sxy = uniform_filter(vx * vy, size=window_size, mode='nearest')
+    Sxz = uniform_filter(vx * vz, size=window_size, mode='nearest')
+    Syz = uniform_filter(vy * vz, size=window_size, mode='nearest')
 
     S = np.stack([
         np.stack([Sxx, Sxy, Sxz], axis=-1),
@@ -110,16 +143,24 @@ def _compute_mdi_block(block: np.ndarray, window_size: int):
         np.stack([Sxz, Syz, Szz], axis=-1),
     ], axis=-2)
 
-    eigvals = np.linalg.eigvalsh(S)[..., ::-1]
+    #eigvals = np.linalg.eigvalsh(S)[..., ::-1]
 
-    l1 = eigvals[..., 0]
-    l2 = eigvals[..., 1]
-    l3 = eigvals[..., 2]
+    #l1 = eigvals[..., 0]
+    #l2 = eigvals[..., 1]
+    #l3 = eigvals[..., 2]
+
+    l1, l2, l3 = eigvals_symm3(Sxx, Syy, Szz, Sxy, Sxz, Syz)
+
+    # sort eigenvalues
+    l1, l2, l3 = np.maximum.reduce([l1,l2,l3]), \
+                np.minimum.reduce([np.maximum(l1,l2), np.maximum(l1,l3), np.maximum(l2,l3)]), \
+                np.minimum.reduce([l1,l2,l3])
 
     l0 = (l1 + l2 + l3) / 3.0
 
     mdi = np.zeros_like(l0)
-    valid = l0 > 0
+    #valid = l0 > 0
+    valid = l0 > 1e-6
 
     mdi[valid] = np.sqrt(
         (l1[valid] - l0[valid]) ** 2 +
@@ -205,7 +246,7 @@ def parallel_mdi_analysis(
     if v3.shape[0] != 3:
         raise ValueError("Input must have shape (3, z, y, x)")
 
-    devices = devices or ["cpu"] * cpu_count()
+    devices = devices or ["cpu"] * min(cpu_count(), 32)
     use_process_pool = pool_type == "process"
 
     # Output array
