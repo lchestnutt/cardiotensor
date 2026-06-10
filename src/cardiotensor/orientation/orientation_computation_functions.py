@@ -361,65 +361,6 @@ def calculate_MDI_parallel(
     return MDI
 
 
-def compute_MDI_from_v(v3: np.ndarray, window_size: int = 9) -> np.ndarray:
-    """
-    Compute 3D MDI map from tertiary eigenvector field.
-
-    Args:
-        v3: (3, z, y, x) 3D vector field
-        window_size: odd integer
-
-    Returns:
-        mdi_map: (z, y, x)
-    """
-
-    vx, vy, vz = v3
-
-    # --- Normalize ---
-    norm = np.sqrt(vx**2 + vy**2 + vz**2)
-    mask = norm > 0
-
-    vx = np.where(mask, vx / norm, 0)
-    vy = np.where(mask, vy / norm, 0)
-    vz = np.where(mask, vz / norm, 0)
-
-    # --- Tensor components  - local averages ---
-    Sxx = uniform_filter(vx * vx, size=window_size)
-    Syy = uniform_filter(vy * vy, size=window_size)
-    Szz = uniform_filter(vz * vz, size=window_size)
-
-    Sxy = uniform_filter(vx * vy, size=window_size)
-    Sxz = uniform_filter(vx * vz, size=window_size)
-    Syz = uniform_filter(vy * vz, size=window_size)
-
-    # --- Stack tensor ---
-    S = np.stack([
-        np.stack([Sxx, Sxy, Sxz], axis=-1),
-        np.stack([Sxy, Syy, Syz], axis=-1),
-        np.stack([Sxz, Syz, Szz], axis=-1)
-    ], axis=-2)  # shape: (z, y, x, 3, 3)
-
-    # --- Eigenvalues ---
-    eigvals = np.linalg.eigvalsh(S)[..., ::-1]
-
-    lambda1 = eigvals[..., 0]
-    lambda2 = eigvals[..., 1]
-    lambda3 = eigvals[..., 2]
-
-    lambda0 = (lambda1 + lambda2 + lambda3) / 3
-
-    # --- MDI ---
-    mdi = np.sqrt(
-        (lambda1 - lambda0)**2 +
-        (lambda2 - lambda0)**2 +
-        (lambda3 - lambda0)**2
-    ) / (np.sqrt(6) * lambda0)
-
-    mdi[lambda0 == 0] = 0
-
-    return mdi
-
-
 def compute_fraction_anisotropy(eigenvalues_2d: np.ndarray) -> np.ndarray:
     """
     Computes Fractional Anisotropy (FA) from eigenvalues of a structure tensor.

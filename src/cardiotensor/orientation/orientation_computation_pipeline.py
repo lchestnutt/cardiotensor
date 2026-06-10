@@ -18,7 +18,6 @@ from cardiotensor.orientation.orientation_computation_functions import (
     compute_azimuth_and_elevation,
     compute_fraction_anisotropy,
     compute_helix_and_transverse_angles,
-    compute_MDI_from_v,
     calculate_MDI_parallel,
     interpolate_points,
     plot_images,
@@ -339,14 +338,10 @@ Parameters:
         print("MDI")
         print("-" * 40 + "\n")
         print("Calculating myocardial disarray index...")
-        #MDI_vol = compute_MDI_from_v(vec, window_size = int(rho*4 + 1))
+
         MDI_vol = calculate_MDI_parallel(vec, window_size = int(rho*4 + 1))
-        if sys.platform.startswith("win"):
-            num_procs = min(mp.cpu_count(), 59)
-        else:
-            num_procs = mp.cpu_count()
-        #MDI_vol = compute_MDI_parallel(vec, window_size = int(rho*4 + 1), block_size= int(rho*4),num_workers = num_procs)
         print("MDI computation complete")
+        
         MDI_vol, _, _ = remove_padding(MDI_vol, val, vec, padding_start, padding_end)
         print(f"MDI shape after removing padding: {MDI_vol.shape}")
         
