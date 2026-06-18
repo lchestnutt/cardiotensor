@@ -15,7 +15,8 @@ import matplotlib.pyplot as plt
 
 import cv2
 
-from matplotlib.patches import Wedge
+from matplotlib.patches import Wedge, Circle
+from matplotlib.patches import Patch
 
 from scipy.stats import circmean, circstd
 from scipy.ndimage import gaussian_filter1d
@@ -31,6 +32,8 @@ from skimage import exposure
 from astropy import stats
 
 from sklearn.metrics import r2_score
+
+import pyvista as pv
 
 
 def get_septum_point(lv_mask):
@@ -100,6 +103,81 @@ def get_septum_point(lv_mask):
     return clicked[0]
 
 
+
+
+def get_RV_mask(MV, AX, heart_mask, lv_mask):
+
+    """Return the right-ventricle mask (heart_mask minus lv_mask),
+    clipped by the plane perpendicular to the long-axis vector that
+    intersects the mitral valve point `MV`.
+
+    Parameters
+    ----------
+    MV, AX : array-like
+        Mitral valve and apex points (z,y,x) in same coordinate system as masks.
+    heart_mask : ndarray or path-like
+        Whole-heart mask volume or path to folder (will be resampled to lv_mask shape).
+    lv_mask : ndarray
+        Left-ventricle mask volume.
+
+    Returns
+    -------
+    rv_mask : ndarray
+        Binary mask of the RV clipped at the MV plane (voxels on the "apex"
+        side of the MV are kept).
+    """
+
+    axis_vec = np.asarray(MV, dtype=float) - np.asarray(AX, dtype=float)
+    axis_vec = axis_vec / np.linalg.norm(axis_vec)
+
+    # Ensure masks have same shape
+    if heart_mask.shape != lv_mask.shape:
+        heart_mask = resample(heart_mask, target_shape=lv_mask.shape, order=0, TwoD=False)
+
+    # RV = heart - LV (assumes binary masks)
+    rv_mask = (heart_mask > 0).astype(np.uint8) - (lv_mask > 0).astype(np.uint8)
+    rv_mask = np.clip(rv_mask, 0, 1).astype(np.uint8)
+
+    # Clip RV mask at plane through MV with normal axis_vec
+    # Build coordinates of all voxels (z,y,x)
+    nz, ny, nx = rv_mask.shape
+    zz, yy, xx = np.meshgrid(np.arange(nz), np.arange(ny), np.arange(nx), indexing='ij')
+    coords = np.stack([zz, yy, xx], axis=-1).reshape(-1, 3)
+
+    # Compute signed distance along axis_vec from MV
+    MV = np.asarray(MV, dtype=float)
+    rel = coords - MV
+    signed = rel @ axis_vec
+
+    # Keep voxels on apex side of MV (signed <= 0)
+    keep = signed <= 0
+
+    rv_flat = rv_mask.ravel()
+    rv_flat[~keep] = 0
+    rv_mask = rv_flat.reshape(rv_mask.shape)
+
+    # ------------------------------------------------------------
+    # 3D mesh of mask
+    vol_pad = np.pad(rv_mask.astype(np.uint8), 1, mode='constant')
+    verts, faces, norms, vals = measure.marching_cubes(vol_pad, 0.5)
+
+    faces = np.hstack([np.full((faces.shape[0],1),3), faces]).astype(np.int64)
+    mesh = pv.PolyData(verts, faces)
+
+    # ------------------------------------------------------------
+    # Plot
+    pl = pv.Plotter()
+    pl.add_mesh(mesh, color="lightgray", opacity=0.6)
+
+    pl.add_axes()
+    pl.show_grid()
+    pl.show()
+
+
+    return rv_mask
+
+
+
 def load_volume(img_dir):
     #Load TIFF/JP2 stack into 3D numpy array
     files = sorted([f for f in os.listdir(img_dir) if f.lower().endswith(('.tif','.tiff','.jp2'))])
@@ -118,8 +196,11 @@ def create_aha_mask(
     axis_points,
     septum_point,
     images_path,
-    aha_factor,
     return_radial_map=False,
+    additional_downsample=1,
+    rv=False,
+    rv_mask_path=None, 
+    heart_mask_path=None
 ):
     """
     Create a 17-segment AHA mask from an LV mask.
@@ -134,8 +215,6 @@ def create_aha_mask(
         Septum reference point.
     images_path : str
         Path to image stack (used to determine downsampling).
-    aha_factor : float
-        AHA scaling factor.
     return_radial_map : bool, optional
         If True, also returns the radial subdivision map.
 
@@ -166,9 +245,9 @@ def create_aha_mask(
 
     # Compute downsample as aha_factor / mask_factor, at least 1
     try:
-        downsample = int(max(1, round(float(aha_factor) / float(mask_factor))))
+        downsample = int(max(1, round(float(additional_downsample) * float(mask_factor))))
     except Exception:
-        downsample = 1
+        downsample = mask_factor
 
     # --------------------------------------------------
     # Load and resample LV mask
@@ -176,15 +255,15 @@ def create_aha_mask(
     lv_mask_vol = load_volume(lv_mask_path)
     lv_mask_vol_d = resample(
         lv_mask_vol,
-        zoom=1 / downsample,
+        zoom=1 / additional_downsample,
         order=0,
     )
 
     # --------------------------------------------------
     # Long-axis definition
     # --------------------------------------------------
-    MV_d = np.array(axis_points[0])[::-1] / aha_factor
-    Apex_d = np.array(axis_points[1])[::-1] / aha_factor
+    MV_d = np.array(axis_points[0])[::-1] / downsample
+    Apex_d = np.array(axis_points[1])[::-1] / downsample
 
     axis_vec = MV_d - Apex_d
     axis_vec /= np.linalg.norm(axis_vec)
@@ -192,7 +271,593 @@ def create_aha_mask(
     coords = np.array(np.nonzero(lv_mask_vol_d)).T
     centroid = (MV_d + Apex_d) / 2
 
-    septum_point = np.asarray(septum_point)
+    septum_point = np.asarray(septum_point) / additional_downsample
+
+    # --------------------------------------------------
+    # Create RV mask if requested
+    # --------------------------------------------------
+    if rv== True:
+        if rv_mask_path is None:
+            if heart_mask_path is None:
+                raise ValueError("If rv=True, either rv_mask or heart_mask must be provided.")
+            else:
+                heart_mask = load_volume(heart_mask_path)
+                rv_mask = get_RV_mask(MV_d, Apex_d, heart_mask, lv_mask_vol_d)
+        else:
+            rv_mask = load_volume(rv_mask_path)
+            # Ensure rv_mask has same shape as lv_mask_vol_
+            if rv_mask.shape != lv_mask_vol_d.shape:
+                rv_mask = resample(rv_mask, target_shape=lv_mask_vol_d.shape, order=0, TwoD=False, is_mask=True)
+
+
+    # --------------------------------------------------
+    # Long-axis projections
+    # --------------------------------------------------
+    projections = coords @ axis_vec
+
+    # Discard extreme percentiles to guard againts noise and outliers in the mask
+    pmin = np.percentile(projections, 2)
+    pmax = np.percentile(projections, 98)
+    length = pmax - pmin
+
+    basal_thresh = pmin + 2 * length / 3.0
+    mid_thresh = pmin + length / 3.0
+
+    # --------------------------------------------------
+    # Septum reference angle
+    # --------------------------------------------------
+    septum_vec = septum_point - centroid
+
+    pts2d, u, v = project_to_plane(
+        coords,
+        centroid,
+        axis_vec,
+    )
+
+    septum_point2d = np.array([
+        np.dot(septum_vec, u),
+        np.dot(septum_vec, v)
+    ])
+
+    ref_angle = np.arctan2(
+        septum_point2d[1],
+        septum_point2d[0]
+    )
+
+    angles = np.arctan2(pts2d[:, 1], pts2d[:, 0])
+
+    angles_rel = (angles - ref_angle) % (2 * np.pi)
+    angles_rel = (angles_rel + 2 * np.pi / 3) % (2 * np.pi)
+
+    # --------------------------------------------------
+    # Create segment map
+    # --------------------------------------------------
+    segment_map = np.zeros(
+        lv_mask_vol_d.shape,
+        dtype=np.uint16
+    )
+
+    def assign_segment(mask_idx, seg):
+        segment_map[tuple(coords[mask_idx].T)] = seg
+
+    basal_idx = np.where(projections >= basal_thresh)[0]
+
+    mid_idx = np.where(
+        (projections >= mid_thresh) &
+        (projections < basal_thresh)
+    )[0]
+
+    apical_idx = np.where(
+        (projections < mid_thresh) &
+        (projections >= pmin + 0.02 * length)
+    )[0]
+
+    apex_idx = np.where(
+        projections < (pmin + 0.02 * length)
+    )[0]
+
+    def sectors_from_indices(indices, n_sectors, start_seg):
+        sector_width = 2 * np.pi / n_sectors
+
+        for s in range(n_sectors):
+            a0 = s * sector_width
+            a1 = (s + 1) * sector_width
+
+            mask_idx = indices[
+                (angles_rel[indices] >= a0) &
+                (angles_rel[indices] < a1)
+            ]
+
+            assign_segment(mask_idx, start_seg + s)
+
+    # Basal: 1–6
+    sectors_from_indices(basal_idx, 6, 1)
+
+    # Mid: 7–12
+    sectors_from_indices(mid_idx, 6, 7)
+
+    # Apical: 13–16
+    sector_width = 2 * np.pi / 4
+
+    for s in range(4):
+        a0 = s * sector_width
+        a1 = (s + 1) * sector_width
+
+        mask_idx = apical_idx[
+            (angles_rel[apical_idx] >= a0) &
+            (angles_rel[apical_idx] < a1)
+        ]
+
+        assign_segment(mask_idx, 13 + s)
+
+    # Apex: 17
+    if apex_idx.size > 0:
+        assign_segment(apex_idx, 17)
+
+    
+    # ==================================================
+    # RV segmentation (segments 18-26)
+    # ==================================================
+
+    if rv:
+
+        rv_coords = np.array(np.nonzero(rv_mask)).T
+
+        if len(rv_coords) > 0:
+
+            # ------------------------------------------
+            # Long-axis coordinate
+            # ------------------------------------------
+
+            rv_proj = rv_coords @ axis_vec
+
+            rv_pmin = np.percentile(rv_proj, 2)
+            rv_pmax = np.percentile(rv_proj, 98)
+
+            mid_proj = 0.5 * (rv_pmin + rv_pmax)
+
+            rv_length = rv_pmax - rv_pmin
+
+            rv_basal_thresh = rv_pmin + 2 * rv_length / 3
+            rv_mid_thresh = rv_pmin + rv_length / 3
+
+            # ------------------------------------------
+            # Short-axis anatomical basis
+            # ------------------------------------------
+
+            long_axis = axis_vec 
+
+            lv_vec = septum_vec
+
+            # project LV direction into short-axis plane
+            e0 = (
+                lv_vec
+                - np.dot(lv_vec, long_axis) * long_axis
+            )
+
+            e0 /= np.linalg.norm(e0)
+
+            # perpendicular direction in short-axis plane
+            e1 = np.cross(long_axis, e0)
+            e1 /= np.linalg.norm(e1)
+
+            # ------------------------------------------
+            # RV angular coordinate
+            # ------------------------------------------
+
+            #rv_centroid = rv_coords.mean(axis=0)
+            
+            rv_centroid = (
+                septum_point
+                + (
+                    mid_proj
+                    - np.dot(septum_point, long_axis)
+                ) * long_axis
+            )
+
+            rv_rel = rv_coords - rv_centroid
+
+            x = rv_rel @ e1
+            y = rv_rel @ e0
+
+            rv_angles = np.arctan2(y, x)
+            rv_angles = rv_angles % (2 * np.pi)
+
+            # ------------------------------------------
+            # Longitudinal regions
+            # ------------------------------------------
+
+            rv_basal_idx = np.where(
+                rv_proj >= rv_basal_thresh
+            )[0]
+
+            rv_mid_idx = np.where(
+                (rv_proj >= rv_mid_thresh) &
+                (rv_proj < rv_basal_thresh)
+            )[0]
+
+            rv_apical_idx = np.where(
+                rv_proj < rv_mid_thresh
+            )[0]
+
+            # ------------------------------------------
+            # Sector assignment
+            # ------------------------------------------
+
+            def assign_rv_region(
+                indices,
+                start_seg
+            ):
+                """
+                Six 60° sectors are first defined.
+
+                sector 0 -> seg 1
+                sector 1 -> seg 2
+                sector 2 -> seg 3
+
+                sector 3 + half sector 4 -> seg 3
+
+                half sector 4 + sector 5 -> seg 1
+                """
+
+                if len(indices) == 0:
+                    return
+
+                theta = rv_angles[indices]
+
+                seg_local = np.full(
+                    theta.shape,
+                    -1,
+                    dtype=np.int32
+                )
+
+                pi3 = np.pi / 3
+
+
+                # sector 0
+                seg_local[
+                    (theta >= 0) &
+                    (theta < pi3)
+                ] = 0
+
+                # sector 1
+                seg_local[
+                    (theta >= pi3) &
+                    (theta < 2*pi3)
+                ] = 1
+
+                # sector 2
+                seg_local[
+                    (theta >= 2*pi3) &
+                    (theta < 3*pi3)
+                ] = 2
+
+                # sector 3 + first half sector 4
+                seg_local[
+                    (theta >= 3*pi3) &
+                    (theta < 4.5*pi3)
+                ] = 2
+
+                # second half sector 4 + sector 5
+                seg_local[
+                    (theta >= 4.5*pi3) &
+                    (theta < 6*pi3)
+                ] = 0
+                
+                for local_seg in range(3):
+
+                    mask_idx = indices[
+                        seg_local == local_seg
+                    ]
+
+                    if len(mask_idx) == 0:
+                        continue
+
+                    segment_map[
+                        tuple(rv_coords[mask_idx].T)
+                    ] = start_seg + local_seg
+
+            # basal: 18-20
+            assign_rv_region(
+                rv_basal_idx,
+                18
+            )
+
+            # mid: 21-23
+            assign_rv_region(
+                rv_mid_idx,
+                21
+            )
+
+            # apical: 24-26
+            assign_rv_region(
+                rv_apical_idx,
+                24
+            )
+            
+    # --------------------------------------------------
+    # Radial quartile subdivision
+    # --------------------------------------------------
+    
+    if return_radial_map:
+        dists = np.linalg.norm(coords - centroid, axis=1)
+
+        lv_segment_radial_map = np.zeros_like(
+            segment_map,
+            dtype=np.uint16
+        )
+
+        for seg_id in range(1, 18):
+
+            seg_idx = np.where(
+                segment_map[tuple(coords.T)] == seg_id
+            )[0]
+
+            if len(seg_idx) == 0:
+                continue
+
+            seg_dists = dists[seg_idx]
+
+            q25, q50, q75 = np.percentile(
+                seg_dists,
+                [25, 50, 75]
+            )
+
+            for voxel_idx, d in zip(seg_idx, seg_dists):
+
+                if d <= q25:
+                    radial_group = 1
+                elif d <= q50:
+                    radial_group = 2
+                elif d <= q75:
+                    radial_group = 3
+                else:
+                    radial_group = 4
+
+                lv_segment_radial_map[
+                    tuple(coords[voxel_idx])
+                ] = seg_id * 10 + radial_group
+        
+        if rv:
+            
+            rv_dists = np.linalg.norm(rv_coords - rv_centroid, axis=1)
+
+            rv_segment_radial_map = np.zeros_like(
+                segment_map,
+                dtype=np.uint16
+            )
+
+            for seg_id in range(18, 27):
+
+                seg_idx = np.where(
+                    segment_map[tuple(rv_coords.T)] == seg_id
+                )[0]
+
+                if len(seg_idx) == 0:
+                    continue
+
+                seg_dists = rv_dists[seg_idx]
+
+                q25, q50, q75 = np.percentile(
+                    seg_dists,
+                    [25, 50, 75]
+                )
+
+                for voxel_idx, d in zip(seg_idx, seg_dists):
+
+                    if d <= q25:
+                        radial_group = 1
+                    elif d <= q50:
+                        radial_group = 2
+                    elif d <= q75:
+                        radial_group = 3
+                    else:
+                        radial_group = 4
+
+                    rv_segment_radial_map[
+                        tuple(rv_coords[voxel_idx])
+                    ] = seg_id * 10 + radial_group
+
+            # Combine LV and RV radial maps
+            segment_radial_map = lv_segment_radial_map + rv_segment_radial_map
+
+        else: 
+            segment_radial_map = lv_segment_radial_map
+
+    #----------------------------------------------
+    # Visualisation 
+    #----------------------------------------------
+
+    if rv:
+        max_seg = 26
+    else:
+        max_seg = 17
+
+    def _get_segment_colors(n):
+        # Prefer a categorical colormap for up to 20 colors, fall back to HSV for more
+        try:
+            if n <= 20:
+                cmap = plt.get_cmap('tab20', n)
+                colors = cmap(np.linspace(0, 1, n, endpoint=False))[:, :3]
+            else:
+                colors = plt.cm.hsv(np.linspace(0, 1, n, endpoint=False))[:, :3]
+        except Exception:
+            colors = plt.cm.hsv(np.linspace(0, 1, n, endpoint=False))[:, :3]
+        return colors
+
+    segment_colors = _get_segment_colors(max_seg)
+    
+    n_slices = 20
+
+    # Step 1: project voxels along long axis
+    apex_dir = -axis_vec
+
+    # combine LV and RV coordinates if RV exists so projections and
+    # slice extraction operate on a single coordinate array
+    if rv:
+        combined_coords = np.vstack([coords, rv_coords])
+        combined_centroid = combined_coords.mean(axis=0)
+    else:
+        combined_coords = coords
+        combined_centroid = centroid
+
+    projections_norm = (combined_coords - combined_centroid) @ apex_dir
+    slice1 = np.percentile(projections_norm, 2)
+    slicen = np.percentile(projections_norm, 98)
+    slice_positions = np.linspace(slice1, slicen, n_slices)
+    
+    # Step 2: find two orthonormal vectors perpendicular to apex_dir
+    v = apex_dir / np.linalg.norm(apex_dir)
+    if abs(v[0]) < abs(v[1]):
+        u1 = np.array([0, -v[2], v[1]])
+    else:
+        u1 = np.array([-v[2], 0, v[0]])
+    u1 /= np.linalg.norm(u1)
+    u2 = np.cross(v, u1)
+    u2 /= np.linalg.norm(u2)
+    
+    # Step 3: extract slices
+    slices_rgb = []
+    for s in slice_positions:
+        
+        # select voxels near the slice plane (from combined coords)
+        dist = np.abs(projections_norm - s)
+        plane_idx = np.where(dist < 2)[0]
+        plane_coords = combined_coords[plane_idx]
+    
+        if len(plane_coords) == 0:
+            continue
+    
+        # project to 2D plane
+        pts2d = np.column_stack([
+            (plane_coords - combined_centroid) @ u1,
+            (plane_coords - combined_centroid) @ u2
+        ])
+        x = np.round(pts2d[:,0] - pts2d[:,0].min()).astype(int)
+        y = np.round(pts2d[:,1] - pts2d[:,1].min()).astype(int)
+    
+        # create RGB slice (use float colors in 0-1 range)
+        shape = (y.max()+1, x.max()+1, 3)
+        rgb = np.zeros(shape, dtype=float)
+        # ensure integer indexing into the segment map
+        seg_idx0 = plane_coords[:, 0].astype(int)
+        seg_idx1 = plane_coords[:, 1].astype(int)
+        seg_idx2 = plane_coords[:, 2].astype(int)
+        seg_ids = segment_map[seg_idx0, seg_idx1, seg_idx2]
+        for seg_id in range(1, max_seg + 1):
+            mask = seg_ids == seg_id
+            if not np.any(mask):
+                continue
+            # use only RGB channels (ignore alpha) and values are 0-1 from colormap
+            rgb[y[mask], x[mask]] = segment_colors[seg_id-1][:3]
+        slices_rgb.append(rgb)
+    
+    # Step 4: plot slices in 2 rows with legend
+    rows = 2
+    cols = (len(slices_rgb)+1)//2
+    fig, axes = plt.subplots(rows, cols, figsize=(3*cols, 3*rows))
+    axes = axes.flatten()
+    
+    for i, rgb in enumerate(slices_rgb):
+        axes[i].imshow(rgb)
+        axes[i].set_title(f"Slice {i+1}")
+        axes[i].axis('off')
+    
+    for j in range(i+1, len(axes)):
+        axes[j].axis('off')
+    
+    # Legend
+    # segment_colors values are floats in 0-1 from the colormap; use RGB channels
+    patches = [Patch(facecolor=segment_colors[i][:3], label=f"Seg {i+1}") for i in range(max_seg)]
+    fig.legend(handles=patches, loc='upper right', bbox_to_anchor=(1.1, 0.95), title="AHA Segments")
+    
+    plt.tight_layout()
+    plt.show()
+
+    if not return_radial_map:
+        return segment_map, None
+
+    return segment_map, segment_radial_map
+
+
+def create_aha_mask_17(
+    lv_mask_path,
+    axis_points,
+    septum_point,
+    images_path,
+    return_radial_map=False,
+    additional_downsample=1
+):
+    """
+    Create a 17-segment AHA mask from an LV mask.
+
+    Parameters
+    ----------
+    lv_mask_path : str
+        Path to LV mask volume.
+    axis_points : list
+        [MV_point, Apex_point] from config file.
+    septum_point : array-like
+        Septum reference point.
+    images_path : str
+        Path to image stack (used to determine downsampling).
+    return_radial_map : bool, optional
+        If True, also returns the radial subdivision map.
+
+    Returns
+    -------
+    segment_map : ndarray
+        17-segment AHA mask.
+    segment_radial_map : ndarray, optional
+        Segment map with radial quartiles encoded as seg*10 + radial_group.
+    """
+
+    # --------------------------------------------------
+    # Determine downsampling
+    # --------------------------------------------------
+    files_lv = sorted(
+        f for f in os.listdir(lv_mask_path)
+        if f.lower().endswith((".tif", ".tiff", ".jp2"))
+    )
+    files_img = sorted(
+        f for f in os.listdir(images_path)
+        if f.lower().endswith((".tif", ".tiff", ".jp2"))
+    )
+
+    # Avoid zero division or zero scaling when image and mask slice counts differ greatly.
+    # Compute ratio and ensure integer scaling factor >= 1
+    mask_ratio = float(len(files_img)) / max(1, float(len(files_lv)))
+    mask_factor = max(1, int(round(mask_ratio)))
+
+    # Compute downsample as aha_factor / mask_factor, at least 1
+    try:
+        downsample = int(max(1, round(float(additional_downsample) * float(mask_factor))))
+    except Exception:
+        downsample = mask_factor
+
+    # --------------------------------------------------
+    # Load and resample LV mask
+    # --------------------------------------------------
+    lv_mask_vol = load_volume(lv_mask_path)
+    lv_mask_vol_d = resample(
+        lv_mask_vol,
+        zoom=1 / additional_downsample,
+        order=0,
+    )
+
+    # --------------------------------------------------
+    # Long-axis definition
+    # --------------------------------------------------
+    MV_d = np.array(axis_points[0])[::-1] / downsample
+    Apex_d = np.array(axis_points[1])[::-1] / downsample
+
+    axis_vec = MV_d - Apex_d
+    axis_vec /= np.linalg.norm(axis_vec)
+
+    coords = np.array(np.nonzero(lv_mask_vol_d)).T
+    centroid = (MV_d + Apex_d) / 2
+
+    septum_point = np.asarray(septum_point) / additional_downsample
 
     # --------------------------------------------------
     # Long-axis projections
@@ -342,7 +1007,88 @@ def create_aha_mask(
                 tuple(coords[voxel_idx])
             ] = seg_id * 10 + radial_group
 
+    n_slices = 20
+    
+    # 17-segment discrete colours (RGB)
+    segment_colors = np.array([
+        [166,206,227],[31,120,180],[178,223,138],[51,160,44],[251,154,153],
+        [227,26,28],[253,191,111],[255,127,0],[202,178,214],[106,61,154],
+        [255,255,153],[177,89,40],[141,211,199],[255,255,179],[190,186,218],
+        [251,128,114],[128,177,211]
+    ], dtype=np.uint8)
+    
+    # Step 1: project voxels along long axis
+    
+    apex_dir = -axis_vec
+    
+    projections_norm = (coords - centroid) @ apex_dir
+    slice1 = np.percentile(projections_norm, 2)
+    slicen = np.percentile(projections_norm, 98)
+    slice_positions = np.linspace(slice1, slicen, n_slices)
+    
+    # Step 2: find two orthonormal vectors perpendicular to apex_dir
+    v = apex_dir / np.linalg.norm(apex_dir)
+    if abs(v[0]) < abs(v[1]):
+        u1 = np.array([0, -v[2], v[1]])
+    else:
+        u1 = np.array([-v[2], 0, v[0]])
+    u1 /= np.linalg.norm(u1)
+    u2 = np.cross(v, u1)
+    u2 /= np.linalg.norm(u2)
+    
+    # Step 3: extract slices
+    slices_rgb = []
+    for s in slice_positions:
+        
+        # select voxels near the slice plane
+        dist = np.abs(projections_norm - s)
+        plane_idx = np.where(dist < 2)[0]
+        plane_coords = coords[plane_idx]
+    
+        if len(plane_coords) == 0:
+            continue
+    
+        # project to 2D plane
+        pts2d = np.column_stack([
+            (plane_coords - centroid) @ u1,
+            (plane_coords - centroid) @ u2
+        ])
+        x = np.round(pts2d[:,0] - pts2d[:,0].min()).astype(int)
+        y = np.round(pts2d[:,1] - pts2d[:,1].min()).astype(int)
+    
+        # create RGB slice
+        shape = (y.max()+1, x.max()+1, 3)
+        rgb = np.zeros(shape, dtype=np.uint16)
+        seg_ids = segment_map[plane_coords[:,0], plane_coords[:,1], plane_coords[:,2]]
+        for seg_id in range(1, 18):
+            mask = seg_ids == seg_id
+            rgb[y[mask], x[mask]] = segment_colors[seg_id-1]
+        slices_rgb.append(rgb)
+    
+    # Step 4: plot slices in 2 rows with legend
+    rows = 2
+    cols = (len(slices_rgb)+1)//2
+    fig, axes = plt.subplots(rows, cols, figsize=(3*cols, 3*rows))
+    axes = axes.flatten()
+    
+    for i, rgb in enumerate(slices_rgb):
+        axes[i].imshow(rgb)
+        axes[i].set_title(f"Slice {i+1}")
+        axes[i].axis('off')
+    
+    for j in range(i+1, len(axes)):
+        axes[j].axis('off')
+    
+    # Legend
+    patches = [Patch(facecolor=segment_colors[i]/255, label=f"Seg {i+1}") for i in range(17)]
+    fig.legend(handles=patches, loc='upper right', bbox_to_anchor=(1.1, 0.95), title="AHA Segments")
+    
+    plt.tight_layout()
+    plt.show()
+
     return segment_map, segment_radial_map
+
+
 
 def resample(
     vol,
@@ -798,6 +1544,61 @@ def ResliceMultipleSlices(vector, centers, in_folder=None, stack=None):
         geometries.append(slice_geometry)
 
     return slices, geometries
+
+
+
+def GetResliceGeometry(vector, centers, in_folder=None, stack=None):
+    n, perp1, perp2 = newAxes(vector)
+    centers = np.array(centers, dtype=float)
+
+    # --- Load volume slab if folder is provided ---
+    if in_folder is not None:
+        files = sorted(
+            f for f in os.listdir(in_folder)
+            if f.lower().endswith(('.png', '.jpg', '.tif', '.tiff'))
+        )
+        im0 = imread(os.path.join(in_folder, files[0]))
+        depth, height, width = len(files), *im0.shape
+        dimensions = [depth, height, width]
+
+        # Determine slice output size
+        out_d, out_h, out_w = newDimensions(n, dimensions)
+
+        # Determine Z slab needed to cover all slices
+        z_offsets = (
+            abs(perp1[0]) * (out_w / 2) +
+            abs(perp2[0]) * (out_h / 2)
+        )
+
+        z_min = int(np.floor(np.min(centers[:, 0]) - z_offsets))
+        z_max = int(np.ceil(np.max(centers[:, 0]) + z_offsets))
+
+        z_min_clamped = max(0, z_min)
+        z_max_clamped = min(depth - 1, z_max)
+
+    else:
+        depth, height, width = stack.shape
+        dimensions = [depth, height, width]
+        out_d, out_h, out_w = newDimensions(n, dimensions)
+
+    geometries = []
+
+    # --- Reslice each center ---
+    for c_new in centers:
+        slice_geometry = {
+            "slice_center_3d": c_new.astype(float),
+            "axis_x_3d": perp1.astype(float),
+            "axis_y_3d": (-perp2).astype(float),
+            "normal_3d": n.astype(float),
+            "width": out_w,
+            "height": out_h,
+            "z_slab": (z_min_clamped, z_max_clamped),
+        }
+        geometries.append(slice_geometry)
+    
+    return geometries
+
+
 
 # Two vector reslice for long axis - septum point and MV axis 
 def Reslice3Points(p1, p2, p3, in_folder=None, stack=None):
@@ -2238,13 +3039,25 @@ def plot_segment_histogram(
     circular_mean=False,
     xlab = 'Value',
     ylab = 'Count',
-    title=None
+    title=None, 
+    divide_radial=False,
 ):
 
     # --------------------
     # Combine selected segments
     # --------------------
-    seg_idx = [s - 1 for s in segments]
+    if divide_radial:
+        ##divide radial must be true
+        seg_idx = []
+        for s in segments:
+            base = s // 10
+            r = s % 10
+            idx = (base - 1) * 4 + r -1
+            seg_idx.append(idx)
+
+    else:
+        seg_idx = [s - 1 for s in segments]
+    
     hist = bins[seg_idx].sum(axis=0)
     
     # Crop histogram to negate masking artifacts
@@ -2555,6 +3368,150 @@ def bullseye_plot(
     ax.set_xlim(-4.2, 4.2)
     ax.set_ylim(-4.2, 4.2)
     ax.axis('off')
+
+    return fig, ax
+
+def bullseye_plot_ext(
+    all_values,
+    value_range=(-90, 90),
+    cmap="viridis",
+    title=" ",
+    figsize=(8, 8),
+):
+    """
+    Publication-grade AHA LV + RV schematic matching clinical 26-segment layout.
+    """
+
+    all_values = np.asarray(all_values)
+    if all_values.size != 26:
+        raise ValueError("all_values must have 26 elements")
+
+    lv_values = all_values[:17]
+    rv_values = all_values[17:26]
+
+    if lv_values.size != 17:
+        raise ValueError("lv_values must have 17 elements")
+    if rv_values.size != 9:
+        raise ValueError("rv_values must have 9 elements")
+
+    cmap = plt.cm.get_cmap(cmap)
+    norm = plt.Normalize(*value_range)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.set_aspect("equal")
+
+    # -------------------------------------------------------
+    # Helper
+    # -------------------------------------------------------
+    def add_wedge(r_in, r_out, t1, t2, val):
+        color = cmap(norm(val)) if not np.isnan(val) else "lightgray"
+        ax.add_patch(
+            Wedge(
+                (0, 0),
+                r_out,
+                t1,
+                t2,
+                width=r_out - r_in,
+                facecolor=color,
+                edgecolor="white",
+                linewidth=1.5,
+            )
+        )
+
+    # -------------------------------------------------------
+    # LV geometry (standard AHA bullseye)
+    # -------------------------------------------------------
+    r_apex, r_mid, r_basal, r_outer = 1.0, 2.0, 3.0, 4.0
+
+    angles = np.linspace(60, 420, 7)
+
+    # basal + mid
+    for i in range(6):
+        add_wedge(r_basal, r_outer, angles[i], angles[i + 1], lv_values[i])
+        add_wedge(r_mid, r_basal, angles[i], angles[i + 1], lv_values[6 + i])
+
+    # apical ring
+    angles_apex = np.linspace(45, 405, 5)
+    for i in range(4):
+        add_wedge(
+            r_apex,
+            r_mid,
+            angles_apex[i],
+            angles_apex[i + 1],
+            lv_values[12 + i],
+        )
+
+    # apex
+    ax.add_patch(
+        Circle(
+            (0, 0),
+            r_apex,
+            facecolor=cmap(norm(lv_values[16])),
+            edgecolor="white",
+            linewidth=1.5,
+        )
+    )
+
+    # -------------------------------------------------------
+    # RV geometry (CURVED ATTACHMENT — matches your image)
+    # -------------------------------------------------------
+
+    # RV occupies septal side of LV basal ring (~180° arc)
+    rv_start = 120   # adjust if your septum orientation differs
+    rv_end = 240
+
+    rv_angles = np.linspace(rv_start, rv_end, 4)
+
+    r_rv_inner = r_outer
+    r_rv_outer = r_outer + 1.2
+
+    # 3 radial levels: basal / mid / apical RV
+    # each has 3 angular segments
+
+    for level in range(3):
+        r_in = r_outer + level * 0.4
+        r_out = r_outer + (level + 1) * 0.4
+
+        for i in range(3):
+            val = rv_values[level * 3 + i]
+
+            add_wedge(
+                r_in,
+                r_out,
+                rv_angles[i],
+                rv_angles[i + 1],
+                val,
+            )
+
+            # optional labels
+            theta = np.deg2rad((rv_angles[i] + rv_angles[i + 1]) / 2)
+            r_text = (r_in + r_out) / 2
+            ax.text(
+                r_text * np.cos(theta),
+                r_text * np.sin(theta),
+                str(level * 3 + i + 18),
+                ha="center",
+                va="center",
+                fontsize=8,
+                color="black",
+            )
+
+    # -------------------------------------------------------
+    # Colorbar
+    # -------------------------------------------------------
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+
+    cax = fig.add_axes([0.88, 0.15, 0.03, 0.7])
+    plt.colorbar(sm, cax=cax).set_label("Value")
+
+    # -------------------------------------------------------
+    # Layout
+    # -------------------------------------------------------
+    ax.set_xlim(-4.5, 5.5)
+    ax.set_ylim(-4.5, 4.5)
+    ax.axis("off")
+    ax.set_title(title)
 
     return fig, ax
 
