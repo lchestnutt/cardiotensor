@@ -146,7 +146,6 @@ def script() -> None:
     
     # Swap rows and columns of bins - address this in calculation/analysis
     bins, unique_segments = utils.histogram(rdr=ha_rdr, start=int(start), end=int(end), seg_map=seg_resampled, factor=1)
-    bins = bins.transpose()
 
     if unique_segments is None:
         print("No segments found in segment map, exiting.")
@@ -173,6 +172,8 @@ def script() -> None:
             writer.writerows(entries)
 
 
+    # Correct transposition error
+    bins = bins.transpose()
     if args.plot:
 
         if args.rv:
