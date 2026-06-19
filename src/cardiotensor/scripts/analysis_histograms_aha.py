@@ -20,6 +20,9 @@ from cardiotensor.utils.DataReader import DataReader
 from cardiotensor.utils.utils import read_conf_file
 import cardiotensor.analysis.analysis_utils as utils
 import csv
+from cardiotensor.colormaps.helix_angle import helix_angle_cmap
+
+import draw_aha_model as aha
 
 
 def script() -> None:
@@ -90,7 +93,7 @@ def script() -> None:
     if args.rv:
         if args.rv_mask == None:
             # Calculate an RV mask from the myomapping mask and the LV
-            heart_mask = params.get("HEART_MASK", None)
+            heart_mask = params.get("MASK_PATH", None)
 
             seg_map, seg_radial_map = utils.create_aha_mask(
                 str(args.lv_mask), 
@@ -166,53 +169,152 @@ def script() -> None:
             writer.writeheader()
             writer.writerows(entries)
 
-    # PLot per-segment histogram
+
     if args.plot:
-        # Build an array for 17 AHA segments. If radial subdivision is present
-        # (4 layers per segment) aggregate the four radial parts into the
-        # corresponding base AHA segment.
-        bins17 = np.zeros((17, bins.shape[1]), dtype=bins.dtype)
-        if args.divide_radial:
+
+        if args.rv:
+            max_segs = 26
+        else:
+            max_segs = 17
+    
+        if args.divide_radial: 
+            bins_short = np.zeros((bins.shape[0], max_segs), dtype=bins.dtype)
+
             # unique_segments are expected to contain labels like 11,12,13,14
             # for segment 1, and 101..104 for segment 10. Map by arithmetic:
             # base_label = segment * 10, radial parts = base_label + 1..4
             unique_ints = [int(u) for u in unique_segments]
-            for s in range(1, 18):
+            for s in range(1, max_segs+1):
                 base = s * 10
                 for r in range(1, 5):
                     label = base + r
                     if label in unique_ints:
                         idx = unique_ints.index(label)
-                        bins17[s - 1] += bins[idx]
-        else:
-            for i, s in enumerate(unique_segments):
-                if 1 <= int(s) <= 17:
-                    bins17[int(s) - 1] = bins[i]
+                        bins_short[:,s - 1] += bins[:,idx]
+        else: 
+            bins_short = bins
 
-        # Plot each segment histogram
-        for seg_id in range(1, 18):
+
+        if args.rv:
+            all_means = utils.segment_means_from_histogram(bins_short, circular=True)
+            LV_means = {i: all_means[i] for i in range(1, 18)}
+            
+            aha.draw_aha_model(all_means,
+                            model=26,
+                            value_range=(-90,90),
+                            cmap=helix_angle_cmap,
+                            colorbar_label='Mean Helical Angle (°)')
+            aha.draw_aha_model(LV_means,
+                            model=17,
+                            value_range=(-90,90),
+                            cmap=helix_angle_cmap,
+                            colorbar_label='Mean Helical Angle (°)')
+            
+        else:
+            LV_means = utils.segment_means_from_histogram(bins_short, circular=True)
+            
+            aha.draw_aha_model(LV_means,
+                            model=17,
+                            value_range=(-90,90),
+                            cmap=helix_angle_cmap,
+                            colorbar_label='Mean Helical Angle (°)')
+            
+        lv_segs = [1, 4, 5, 6, 7, 10, 11, 12, 13, 15, 16, 17]
+        septum_segs = [2, 3, 8, 9, 14]
+        rv_segs = np.arange(18, 27)
+
+        if args.divide_radial:
+
+            ## LV
+            base_segs = lv_segs
+            lv_segs = []
+            for s in base_segs:
+                base = s * 10
+                for r in range(1, 5):
+                    label = base + r
+                    lv_segs.append(label)
+            
+            ## Septum 
+            base_segs = septum_segs
+            septum_segs = []
+            for s in base_segs:
+                base = s * 10
+                for r in range(1, 5):
+                    label = base + r
+                    septum_segs.append(label)
+            ## RV
+            if args.rv: 
+                base_segs = rv_segs
+                rv_segs = []
+                for s in base_segs:
+                    base = s * 10
+                    for r in range(1, 5):
+                        label = base + r
+                        rv_segs.append(label)
+                    
+        # Plot overall histogram
+        fig = utils.plot_segment_histogram(
+            bins,
+            segments=lv_segs,
+            value_range=(-90, 90),
+            smooth_sigma=0,
+            normalize=True,
+            show_mean=True,
+            circular_mean=True,
+            xlab='HA (deg)',
+            ylab='Frequency',
+            title='LV Histogram',
+            divide_radial=args.divide_radial
+        )
+
+        out_pdf = outdir / "hist_LV.pdf"
+        fig.savefig(out_pdf, bbox_inches="tight")
+        plt.close(fig)
+
+
+        fig = utils.plot_segment_histogram(
+            bins,
+            segments=septum_segs,
+            value_range=(-90, 90),
+            smooth_sigma=0,
+            normalize=True,
+            show_mean=True,
+            circular_mean=True,
+            xlab='HA (deg)',
+            ylab='Frequency',
+            title='Septum Histogram',
+            divide_radial=args.divide_radial
+        )
+
+        out_pdf = outdir / "hist_septum.pdf"
+        fig.savefig(out_pdf, bbox_inches="tight")
+        plt.close(fig)
+
+        if args.rv: 
             fig = utils.plot_segment_histogram(
-                bins17,
-                segments=[seg_id],
+                bins,
+                segments=rv_segs,
                 value_range=(-90, 90),
                 smooth_sigma=0,
-                normalize=False,
-                show_mean=False,
-                circular_mean=False,
+                normalize=True,
+                show_mean=True,
+                circular_mean=True,
                 xlab='HA (deg)',
                 ylab='Frequency',
-                title=f'AHA Segment {seg_id} HA histogram'
+                title='RV Histogram',
+                divide_radial=args.divide_radial
             )
 
-            out_png = outdir / f"hist_AHA_segment_{seg_id}.png"
-            out_pdf = outdir / f"hist_AHA_segment_{seg_id}.pdf"
-            fig.savefig(out_png, bbox_inches="tight")
+            out_pdf = outdir / "hist_RV.pdf"
             fig.savefig(out_pdf, bbox_inches="tight")
             plt.close(fig)
-            print(f"Saved segment {seg_id} histograms to {out_png} / {out_pdf}")
 
-    print(f"Done. Figures in {outdir}")
+
+        print(f"Done. Figures in {outdir}")
 
 
 if __name__ == "__main__":
     script()
+
+
+

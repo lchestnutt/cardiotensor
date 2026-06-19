@@ -157,6 +157,7 @@ def get_RV_mask(MV, AX, heart_mask, lv_mask):
     rv_mask = rv_flat.reshape(rv_mask.shape)
 
     # ------------------------------------------------------------
+    """
     # 3D mesh of mask
     vol_pad = np.pad(rv_mask.astype(np.uint8), 1, mode='constant')
     verts, faces, norms, vals = measure.marching_cubes(vol_pad, 0.5)
@@ -172,7 +173,7 @@ def get_RV_mask(MV, AX, heart_mask, lv_mask):
     pl.add_axes()
     pl.show_grid()
     pl.show()
-
+    """
 
     return rv_mask
 
@@ -3058,7 +3059,7 @@ def plot_segment_histogram(
     else:
         seg_idx = [s - 1 for s in segments]
     
-    hist = bins[seg_idx].sum(axis=0)
+    hist = bins[:, seg_idx].sum(axis=1)
     
     # Crop histogram to negate masking artifacts
     hist[0] = hist[1]
@@ -3097,14 +3098,19 @@ def plot_segment_histogram(
     # --------------------
     if show_mean:
         if circular_mean:
-            # Convert to radians
-            scale_rad = np.linspace(0,2*np.pi, 256)
-            scale_mean_val = np.rad2deg(stats.circmean(scale_rad, weights=hist))
-            f = (value_range[1] - value_range[0])  / 360
-            cmean_val = scale_mean_val*f + value_range[0]
-            if cmean_val < value_range[0]:
-                cmean_val += f*360
-            ax.axvline(cmean_val, linestyle='--', linewidth=2, label=f"Circlar Mean = {cmean_val:.2f}")
+            angles = np.linspace(value_range[0], value_range[1], hist.size, endpoint=False)
+            theta = np.deg2rad(2*angles)
+            
+            z = np.sum(hist * np.exp(1j*theta))
+            cmean = np.rad2deg(np.angle(z))/2
+            
+            # wrap into [-90,90)
+            if cmean < -90:
+                cmean += 180
+            elif cmean >= 90:
+                cmean -= 180
+
+            ax.axvline(cmean, linestyle='--', linewidth=2, label=f"Circlar Mean = {cmean:.2f}")
             mean_val = np.average(x, weights=hist)
             ax.axvline(mean_val, linestyle='-', linewidth=2, label=f"Mean = {mean_val:.2f}")
         else:
@@ -3115,6 +3121,7 @@ def plot_segment_histogram(
     plt.show()
     
     return fig 
+
             
 def plot_segment_histogram_labels(
     bins,
@@ -3193,14 +3200,13 @@ def plot_segment_histogram_labels(
     return fig
             
             
-
 def segment_means_from_histogram(
     bins,
     value_range=(-90, 90),
     circular=False
 ):
     """
-    bins : ndarray (17, 256)
+    bins : ndarray (256, no_segs)
         Histogram counts per segment
 
     value_range : tuple
@@ -3211,15 +3217,15 @@ def segment_means_from_histogram(
 
     Returns
     -------
-    means : ndarray (17,)
+    means : dict
     """
-    means = np.full(17, np.nan)
+    means = {}
 
     # Physical x-axis
-    x = np.linspace(value_range[0], value_range[1], bins.shape[1])
+    x = np.linspace(value_range[0], value_range[1], bins.shape[0])
 
-    for s in range(17):
-        hist = bins[s]
+    for s in range(bins.shape[1]):
+        hist = bins[:,s]
         
         # Crop histogram to negate masking artifacts
         hist[0] = hist[1]
@@ -3229,309 +3235,15 @@ def segment_means_from_histogram(
             continue
 
         if circular:
-            scale_rad = np.linspace(0, 2*np.pi, hist.shape[1], endpoint=False)
+            scale_rad = np.linspace(0, 2*np.pi, len(hist), endpoint=False)
             scale_mean_val = np.rad2deg(stats.circmean(scale_rad, weights=hist))
             f = (value_range[1] - value_range[0])  / 360
             cmean_val = scale_mean_val*f + value_range[0]
             if cmean_val < value_range[0]:
                 cmean_val += f*360
-            means[s] = cmean_val
+            means[s+1] = cmean_val
         else:
-            means[s] = np.average(x, weights=hist)
+            means[s+1] = np.average(x, weights=hist)
 
     return means
-
-
-def bullseye_plot(
-    seg_means,
-    value_range=(-90, 90),
-    cmap='viridis',
-    title="Mean HA",
-    cbar_label="HA Mean",
-    figsize=(8, 8)
-):
-    """
-    Create an AHA-style 17-segment bullseye plot.
-
-    Parameters
-    ----------
-    seg_means : array-like (17,)
-        Mean value per segment (NaN allowed)
-
-    value_range : tuple
-        (vmin, vmax) for color normalization
-
-    cmap : str or Colormap
-        Matplotlib colormap
-
-    title : str
-        Figure title
-
-    cbar_label : str
-        Colorbar label
-
-    figsize : tuple
-        Figure size
-
-    Returns
-    -------
-    fig, ax : matplotlib Figure and Axes
-    """
-
-    seg_means = np.asarray(seg_means)
-    if seg_means.size != 17:
-        raise ValueError("seg_means must have length 17")
-
-    cmap = plt.cm.get_cmap(cmap)
-    norm = plt.Normalize(*value_range)
-
-    # --------------------
-    # Helpers
-    # --------------------
-    def add_wedge(ax, r_in, r_out, theta1, theta2, value):
-        color = cmap(norm(value)) if not np.isnan(value) else "lightgray"
-        w = Wedge(
-            center=(0, 0),
-            r=r_out,
-            theta1=theta1,
-            theta2=theta2,
-            width=(r_out - r_in),
-            facecolor=color,
-            edgecolor='white',
-            linewidth=2
-        )
-        ax.add_patch(w)
-
-    def polar_to_xy(r, theta_deg):
-        theta = np.deg2rad(theta_deg)
-        return r * np.cos(theta), r * np.sin(theta)
-
-    # --------------------
-    # Figure
-    # --------------------
-    fig, ax = plt.subplots(figsize=figsize, subplot_kw={'aspect': 'equal'})
-
-    # Radii
-    r1, r2, r3, r4 = 1.0, 2.0, 3.0, 4.0
-
-    # --------------------
-    # Basal + Mid rings
-    # --------------------
-    angles = np.linspace(60, 420, 7)
-
-    for i in range(6):
-        add_wedge(ax, r3, r4, angles[i], angles[i+1], seg_means[i])        # basal
-        add_wedge(ax, r2, r3, angles[i], angles[i+1], seg_means[6 + i])   # mid
-
-    # --------------------
-    # Apical ring
-    # --------------------
-    angles_apex = np.linspace(45, 405, 5)
-    for i in range(4):
-        add_wedge(ax, r1, r2, angles_apex[i], angles_apex[i+1], seg_means[12 + i])
-
-    # --------------------
-    # Apex
-    # --------------------
-    apex_color = cmap(norm(seg_means[16])) if not np.isnan(seg_means[16]) else "lightgray"
-    ax.add_patch(plt.Circle((0, 0), r1, color=apex_color, ec='white', lw=2))
-
-    # --------------------
-    # Labels
-    # --------------------
-    for i in range(6):
-        ax.text(*polar_to_xy(3.5, (angles[i] + angles[i+1]) / 2),
-                str(i + 1), ha='center', va='center', fontsize=12, color='white')
-        ax.text(*polar_to_xy(2.5, (angles[i] + angles[i+1]) / 2),
-                str(7 + i), ha='center', va='center', fontsize=12, color='white')
-
-    for i in range(4):
-        ax.text(*polar_to_xy(1.5, (angles_apex[i] + angles_apex[i+1]) / 2),
-                str(13 + i), ha='center', va='center', fontsize=12, color='white')
-
-    ax.text(0, 0, "17", ha='center', va='center', fontsize=14, color='white')
-
-    # --------------------
-    # Colorbar
-    # --------------------
-    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
-    sm.set_array([])
-
-    cax = fig.add_axes([0.88, 0.15, 0.03, 0.7])
-    cbar = plt.colorbar(sm, cax=cax)
-    cbar.set_label(cbar_label)
-
-    # --------------------
-    # Final layout
-    # --------------------
-    ax.set_title(title, fontsize=16)
-    ax.set_xlim(-4.2, 4.2)
-    ax.set_ylim(-4.2, 4.2)
-    ax.axis('off')
-
-    return fig, ax
-
-def bullseye_plot_ext(
-    all_values,
-    value_range=(-90, 90),
-    cmap="viridis",
-    title=" ",
-    figsize=(8, 8),
-):
-    """
-    Publication-grade AHA LV + RV schematic matching clinical 26-segment layout.
-    """
-
-    all_values = np.asarray(all_values)
-    if all_values.size != 26:
-        raise ValueError("all_values must have 26 elements")
-
-    lv_values = all_values[:17]
-    rv_values = all_values[17:26]
-
-    if lv_values.size != 17:
-        raise ValueError("lv_values must have 17 elements")
-    if rv_values.size != 9:
-        raise ValueError("rv_values must have 9 elements")
-
-    cmap = plt.cm.get_cmap(cmap)
-    norm = plt.Normalize(*value_range)
-
-    fig, ax = plt.subplots(figsize=figsize)
-    ax.set_aspect("equal")
-
-    # -------------------------------------------------------
-    # Helper
-    # -------------------------------------------------------
-    def add_wedge(r_in, r_out, t1, t2, val):
-        color = cmap(norm(val)) if not np.isnan(val) else "lightgray"
-        ax.add_patch(
-            Wedge(
-                (0, 0),
-                r_out,
-                t1,
-                t2,
-                width=r_out - r_in,
-                facecolor=color,
-                edgecolor="white",
-                linewidth=1.5,
-            )
-        )
-
-    # -------------------------------------------------------
-    # LV geometry (standard AHA bullseye)
-    # -------------------------------------------------------
-    r_apex, r_mid, r_basal, r_outer = 1.0, 2.0, 3.0, 4.0
-
-    angles = np.linspace(60, 420, 7)
-
-    # basal + mid
-    for i in range(6):
-        add_wedge(r_basal, r_outer, angles[i], angles[i + 1], lv_values[i])
-        add_wedge(r_mid, r_basal, angles[i], angles[i + 1], lv_values[6 + i])
-
-    # apical ring
-    angles_apex = np.linspace(45, 405, 5)
-    for i in range(4):
-        add_wedge(
-            r_apex,
-            r_mid,
-            angles_apex[i],
-            angles_apex[i + 1],
-            lv_values[12 + i],
-        )
-
-    # apex
-    ax.add_patch(
-        Circle(
-            (0, 0),
-            r_apex,
-            facecolor=cmap(norm(lv_values[16])),
-            edgecolor="white",
-            linewidth=1.5,
-        )
-    )
-
-    # -------------------------------------------------------
-    # RV geometry (CURVED ATTACHMENT — matches your image)
-    # -------------------------------------------------------
-
-    # RV occupies septal side of LV basal ring (~180° arc)
-    rv_start = 120   # adjust if your septum orientation differs
-    rv_end = 240
-
-    rv_angles = np.linspace(rv_start, rv_end, 4)
-
-    r_rv_inner = r_outer
-    r_rv_outer = r_outer + 1.2
-
-    # 3 radial levels: basal / mid / apical RV
-    # each has 3 angular segments
-
-    for level in range(3):
-        r_in = r_outer + level * 0.4
-        r_out = r_outer + (level + 1) * 0.4
-
-        for i in range(3):
-            val = rv_values[level * 3 + i]
-
-            add_wedge(
-                r_in,
-                r_out,
-                rv_angles[i],
-                rv_angles[i + 1],
-                val,
-            )
-
-            # optional labels
-            theta = np.deg2rad((rv_angles[i] + rv_angles[i + 1]) / 2)
-            r_text = (r_in + r_out) / 2
-            ax.text(
-                r_text * np.cos(theta),
-                r_text * np.sin(theta),
-                str(level * 3 + i + 18),
-                ha="center",
-                va="center",
-                fontsize=8,
-                color="black",
-            )
-
-    # -------------------------------------------------------
-    # Colorbar
-    # -------------------------------------------------------
-    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
-    sm.set_array([])
-
-    cax = fig.add_axes([0.88, 0.15, 0.03, 0.7])
-    plt.colorbar(sm, cax=cax).set_label("Value")
-
-    # -------------------------------------------------------
-    # Layout
-    # -------------------------------------------------------
-    ax.set_xlim(-4.5, 5.5)
-    ax.set_ylim(-4.5, 4.5)
-    ax.axis("off")
-    ax.set_title(title)
-
-    return fig, ax
-
-
-## CLAHE for image visualisation 
-def auto_contrast(image, plo=2, phigh=98, clip_limit=0.03):
-    """
-    Auto-contrast with percentile clipping and CLAHE for synchrotron images.
-    """
-    image = image.astype(np.float32)
-
-    # percentile clipping
-    lo, hi = np.percentile(image, (plo, phigh))
-    image = np.clip(image, lo, hi)
-
-    # normalize to 0-1 for CLAHE
-    image = (image - lo) / (hi - lo)
-
-    # CLAHE
-    image = exposure.equalize_adapthist(image, clip_limit=clip_limit)
-
-    return image
 
