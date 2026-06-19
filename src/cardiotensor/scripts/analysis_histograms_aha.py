@@ -143,8 +143,11 @@ def script() -> None:
     
     # Use histogram utility to compute per-segment 0-255 bins from the DataReader
     print("Computing per-segment histograms")
-    bins, unique_segments = utils.histogram(rdr=ha_rdr, start=int(start), end=int(end), seg_map=seg_resampled, factor=1)
     
+    # Swap rows and columns of bins - address this in calculation/analysis
+    bins, unique_segments = utils.histogram(rdr=ha_rdr, start=int(start), end=int(end), seg_map=seg_resampled, factor=1)
+    bins = bins.transpose()
+
     if unique_segments is None:
         print("No segments found in segment map, exiting.")
         return
