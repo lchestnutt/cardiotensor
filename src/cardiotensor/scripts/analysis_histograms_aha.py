@@ -227,6 +227,7 @@ def script() -> None:
                             cmap=cmap,
                             colorbar_label=f'Mean {hist_type}')
 
+            plt.show()
             out_pdf = outdir / "hist_bullseye_26seg.pdf"
             figr.savefig(out_pdf, bbox_inches="tight")
             plt.close(figr)
@@ -238,6 +239,7 @@ def script() -> None:
                             cmap=cmap,
                             colorbar_label=f'Mean {hist_type}')
 
+            plt.show()
             out_pdf = outdir / "hist_bullseye_17seg.pdf"
             figl.savefig(out_pdf, bbox_inches="tight")
             plt.close(figl)
@@ -250,6 +252,7 @@ def script() -> None:
                             cmap=cmap,
                             colorbar_label=f'Mean {hist_type}')
 
+            plt.show()
             out_pdf = outdir / "hist_bullseye_17seg.pdf"
             figl.savefig(out_pdf, bbox_inches="tight")
             plt.close(figl)
