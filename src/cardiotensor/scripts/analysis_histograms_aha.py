@@ -22,7 +22,7 @@ import cardiotensor.analysis.analysis_utils as utils
 import csv
 from cardiotensor.colormaps.helix_angle import helix_angle_cmap
 
-import draw_aha_model as aha
+import cardiotensor.scripts.draw_aha_model as aha
 
 
 def script() -> None:
@@ -31,7 +31,7 @@ def script() -> None:
     ap.add_argument("--hist_type", type=str, default="FA", help="Type of histogram to compute (e.g., 'HA', 'FA', 'IA)")
     ap.add_argument("--lv_mask", type=Path, required=True, help="LV mask directory (slices)")
     ap.add_argument("--axis_points", type=str, default=None, help="Override axis points as 'z1,y1,x1;z2,y2,x2'")
-    ap.add_argument("--septum", type=str, default=None, help="Septum point 'z,y,x' (optional interactive if omitted)")
+    ap.add_argument("--septum", nargs=3, type=float, default=None, help="Septum point 'z,y,x' (optional interactive if omitted)")
     ap.add_argument("--outdir", type=Path, default=None)
 
     # `--write_csv` and `--plot` default to True; provide `--no-` flags to disable
@@ -48,6 +48,7 @@ def script() -> None:
     ap.add_argument("--rv_mask", type=Path, default=None, help="Path to RV mask directory (slices) (default: None)")
     ap.add_argument("--value_range", nargs=2, type=float, default=[0.0, 1.0])
     ap.add_argument("--circular", action="store_true", default=False, help="Use circular statistics for plotting (default: False)")
+    ap.add_argument("--headless", action="store_true", default=False, help="Disable popups for batch processing")
     args = ap.parse_args()
 
     # Resolve config/base
@@ -75,6 +76,9 @@ def script() -> None:
     ha_dir = Path(images_path)  # fallback
     ha_rdr = DataReader(ha_dir)
 
+    #Folder to make histogram from
+    hist_type = args.hist_type
+    
     # Axis points
     if args.axis_points:
         try:
@@ -87,7 +91,7 @@ def script() -> None:
 
     # Septum
     if args.septum:
-        sept = tuple(map(float, args.septum.split(",")))
+        sept = args.septum
     else:
         # interactive picker (will open a matplotlib window)
         sept = utils.get_septum_point(str(args.lv_mask))
@@ -113,6 +117,8 @@ def script() -> None:
                 additional_downsample=args.mask_downsample,
                 rv=True,
                 heart_mask_path=heart_mask,
+                headless=args.headless,
+                savepath=outdir
             )
         else:
             seg_map, seg_radial_map = utils.create_aha_mask(
@@ -124,6 +130,8 @@ def script() -> None:
                 additional_downsample=args.mask_downsample,
                 rv=True,
                 rv_mask_path=str(args.rv_mask),
+                headless=args.headless,
+                savepath=outdir
             )
 
     else:
@@ -134,6 +142,8 @@ def script() -> None:
             str(images_path),
             return_radial_map=args.divide_radial,
             additional_downsample=args.mask_downsample,
+            headless=args.headless,
+            savepath=outdir
         )
 
     if args.divide_radial:
@@ -162,7 +172,7 @@ def script() -> None:
 
     # Write histogram data to a csv file for future analysis
     if args.write_csv:
-        csv_filename = outdir / "histogram.csv"
+        csv_filename = outdir / f"histogram_{hist_type}.csv"
         fieldnames = (
             ["VALUE"] +
             [f"SEGMENT-{zone}"
@@ -187,7 +197,6 @@ def script() -> None:
 
         val_range = args.value_range
         circ = args.circular
-        hist_type = args.hist_type
 
         if hist_type == 'HA' or hist_type == 'IA':
             cmap = helix_angle_cmap
@@ -227,8 +236,9 @@ def script() -> None:
                             cmap=cmap,
                             colorbar_label=f'Mean {hist_type}')
 
-            plt.show()
-            out_pdf = outdir / "hist_bullseye_26seg.pdf"
+            if not args.headless:
+                plt.show()
+            out_pdf = outdir / f"hist_bullseye_26seg_{hist_type}.pdf"
             figr.savefig(out_pdf, bbox_inches="tight")
             plt.close(figr)
 
@@ -239,8 +249,9 @@ def script() -> None:
                             cmap=cmap,
                             colorbar_label=f'Mean {hist_type}')
 
-            plt.show()
-            out_pdf = outdir / "hist_bullseye_17seg.pdf"
+            if not args.headless:
+                plt.show()
+            out_pdf = outdir / f"hist_bullseye_17seg_{hist_type}.pdf"
             figl.savefig(out_pdf, bbox_inches="tight")
             plt.close(figl)
         else:
@@ -252,8 +263,9 @@ def script() -> None:
                             cmap=cmap,
                             colorbar_label=f'Mean {hist_type}')
 
-            plt.show()
-            out_pdf = outdir / "hist_bullseye_17seg.pdf"
+            if not args.headless:
+                plt.show()
+            out_pdf = outdir / f"hist_bullseye_17seg_{hist_type}.pdf"
             figl.savefig(out_pdf, bbox_inches="tight")
             plt.close(figl)
 
@@ -302,10 +314,11 @@ def script() -> None:
             xlab=f'{hist_type}',
             ylab='Frequency',
             title='LV Histogram',
-            divide_radial=args.divide_radial
+            divide_radial=args.divide_radial,
+            headless = args.headless
         )
 
-        out_pdf = outdir / "hist_LV.pdf"
+        out_pdf = outdir / f"hist_LV_{hist_type}.pdf"
         fig.savefig(out_pdf, bbox_inches="tight")
         plt.close(fig)
 
@@ -321,10 +334,11 @@ def script() -> None:
             xlab=f'{hist_type}',
             ylab='Frequency',
             title='Septum Histogram',
-            divide_radial=args.divide_radial
+            divide_radial=args.divide_radial,
+            headless = args.headless
         )
 
-        out_pdf = outdir / "hist_septum.pdf"
+        out_pdf = outdir / f"hist_septum_{hist_type}.pdf"
         fig.savefig(out_pdf, bbox_inches="tight")
         plt.close(fig)
 
@@ -340,10 +354,11 @@ def script() -> None:
                 xlab=f'{hist_type}',
                 ylab='Frequency',
                 title='RV Histogram',
-                divide_radial=args.divide_radial
+                divide_radial=args.divide_radial,
+                headless = args.headless
             )
 
-            out_pdf = outdir / "hist_RV.pdf"
+            out_pdf = outdir / f"hist_RV_{hist_type}.pdf"
             fig.savefig(out_pdf, bbox_inches="tight")
             plt.close(fig)
 

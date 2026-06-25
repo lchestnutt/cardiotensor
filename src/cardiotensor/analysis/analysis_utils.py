@@ -201,7 +201,9 @@ def create_aha_mask(
     additional_downsample=1,
     rv=False,
     rv_mask_path=None, 
-    heart_mask_path=None
+    heart_mask_path=None,
+    headless=False,
+    savepath=None
 ):
     """
     Create a 17-segment AHA mask from an LV mask.
@@ -428,7 +430,7 @@ def create_aha_mask(
 
             long_axis = axis_vec 
 
-            lv_vec = septum_vec
+            lv_vec = septum_vec / np.linalg.norm(septum_vec)
 
             # project LV direction into short-axis plane
             e0 = (
@@ -771,9 +773,14 @@ def create_aha_mask(
     # segment_colors values are floats in 0-1 from the colormap; use RGB channels
     patches = [Patch(facecolor=segment_colors[i][:3], label=f"Seg {i+1}") for i in range(max_seg)]
     fig.legend(handles=patches, loc='upper right', bbox_to_anchor=(1.1, 0.95), title="AHA Segments")
+
+    if not headless:
+        plt.tight_layout()
+        plt.show()
     
-    plt.tight_layout()
-    plt.show()
+    if savepath:
+        out_pdf = savepath / f"aha_map_slices.pdf"
+        fig.savefig(out_pdf, bbox_inches="tight")
 
     if not return_radial_map:
         return segment_map, None
@@ -3042,6 +3049,7 @@ def plot_segment_histogram(
     ylab = 'Count',
     title=None, 
     divide_radial=False,
+    headless= False
 ):
 
     # --------------------
@@ -3118,7 +3126,8 @@ def plot_segment_histogram(
             ax.axvline(mean_val, linestyle='-', linewidth=2, label=f"Mean = {mean_val:.2f}")
         ax.legend()
     
-    plt.show()
+    if not headless: 
+        plt.show()
     
     return fig 
 
