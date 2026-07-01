@@ -521,7 +521,7 @@ def create_aha_mask(
                 seg_local[
                     (theta >= 0) &
                     (theta < pi3)
-                ] = 0
+                ] = 2
 
                 # sector 1
                 seg_local[
@@ -533,19 +533,19 @@ def create_aha_mask(
                 seg_local[
                     (theta >= 2*pi3) &
                     (theta < 3*pi3)
-                ] = 2
+                ] = 0
 
                 # sector 3 + first half sector 4
                 seg_local[
                     (theta >= 3*pi3) &
                     (theta < 4.5*pi3)
-                ] = 2
+                ] = 0
 
                 # second half sector 4 + sector 5
                 seg_local[
                     (theta >= 4.5*pi3) &
                     (theta < 6*pi3)
-                ] = 0
+                ] = 2
                 
                 for local_seg in range(3):
 
